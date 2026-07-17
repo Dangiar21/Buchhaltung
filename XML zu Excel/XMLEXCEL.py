@@ -3,6 +3,7 @@ import os
 import traceback
 
 # 1. Wir versuchen die Module zu laden. Wenn das fehlschlägt, fangen wir den Fehler ab.
+import io
 try:
     import xml.etree.ElementTree as ET
     import pandas as pd
@@ -23,7 +24,34 @@ def parse_xml_to_list(xml_path):
     rechnungspositionen = []
     
     try:
-        it = ET.iterparse(xml_path)
+        source = xml_path
+        if xml_path.lower().endswith('.p7m'):
+            with open(xml_path, 'rb') as f:
+                data = f.read()
+            
+            # Suche nach dem Start des XML (verschiedene Tags möglich)
+            start_tags = [b'<?xml', b'<p:FatturaElettronica', b'<FatturaElettronica', b'<ns2:FatturaElettronica', b'<ns3:FatturaElettronica']
+            start = -1
+            for tag in start_tags:
+                start = data.find(tag)
+                if start != -1:
+                    break
+            
+            if start == -1:
+                print(f"Fehler: Konnte keinen XML-Anfang in {xml_path} finden.")
+                return []
+                
+            # Suche nach dem Ende des XML
+            end = data.rfind(b'FatturaElettronica>')
+            if end == -1:
+                print(f"Fehler: Konnte kein XML-Ende in {xml_path} finden.")
+                return []
+                
+            end += len(b'FatturaElettronica>')
+            xml_data = data[start:end]
+            source = io.BytesIO(xml_data)
+
+        it = ET.iterparse(source)
         for _, el in it:
             if '}' in el.tag:
                 el.tag = el.tag.split('}', 1)[1]
@@ -121,15 +149,15 @@ if __name__ == "__main__":
                     else:
                         ausgabe_ordner = pfad
 
-                if os.path.isfile(pfad) and pfad.lower().endswith('.xml'):
+                if os.path.isfile(pfad) and (pfad.lower().endswith('.xml') or pfad.lower().endswith('.p7m')):
                     alle_positionen.extend(parse_xml_to_list(pfad))
                 elif os.path.isdir(pfad):
                     print(f"\nDurchsuche Ordner: {pfad}")
                     for filename in os.listdir(pfad):
-                        if filename.lower().endswith('.xml'):
+                        if filename.lower().endswith('.xml') or filename.lower().endswith('.p7m'):
                             alle_positionen.extend(parse_xml_to_list(os.path.join(pfad, filename)))
                 else:
-                    print(f"Überspringe: {pfad} (Keine XML oder Ordner)")
+                    print(f"Überspringe: {pfad} (Keine XML/P7M oder Ordner)")
             
             if alle_positionen:
                 print(f"\nErstelle Excel-Datei mit {len(alle_positionen)} Positionen...")
@@ -173,8 +201,8 @@ if __name__ == "__main__":
             else:
                 print("\nEs wurden keine gültigen Rechnungspositionen gefunden.")
         else:
-            print("Ziehe eine oder mehrere XML-Dateien (Drag & Drop) auf dieses Skript-Icon, um sie zu konvertieren.")
-            print("Oder ziehe einen ganzen Ordner mit XML-Dateien auf das Icon.")
+            print("Ziehe eine oder mehrere XML- oder P7M-Dateien (Drag & Drop) auf dieses Skript-Icon, um sie zu konvertieren.")
+            print("Oder ziehe einen ganzen Ordner mit XML/P7M-Dateien auf das Icon.")
     except Exception as e:
         print("\nEin unerwarteter Fehler ist aufgetreten:")
         print(traceback.format_exc())
