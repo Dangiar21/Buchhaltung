@@ -41,6 +41,8 @@ def parse_xml_to_list(xml_path):
                 cognome = get_text(lieferant_node, 'Cognome')
                 if nome or cognome:
                     lieferant = f"{nome} {cognome}".strip()
+                    
+        liefer_id = get_text(root, './/CedentePrestatore//DatiAnagrafici//IdFiscaleIVA/IdCodice')
 
         # 2. Rechnungsdaten (DatiGeneraliDocumento)
         dati_generali = root.find('.//DatiGeneraliDocumento')
@@ -60,6 +62,8 @@ def parse_xml_to_list(xml_path):
                 k_cognome = get_text(kunde_node, 'Cognome')
                 if k_nome or k_cognome:
                     kunde = f"{k_nome} {k_cognome}".strip()
+
+        kunden_id = get_text(root, './/CessionarioCommittente//DatiAnagrafici//IdFiscaleIVA/IdCodice')
 
         dati_linee = root.findall('.//DettaglioLinee')
         
@@ -87,7 +91,9 @@ def parse_xml_to_list(xml_path):
                 'Rechnungsnummer': rechnungs_nummer,
                 'Datum': rechnungs_datum,
                 'Lieferant': lieferant,
+                'Liefer ID': liefer_id,
                 'Kunde': kunde,
+                'Kunden ID': kunden_id,
                 'Beschreibung': desc,
                 'Menge': qty,
                 f'Einzelpreis ({waehrung})': price,
@@ -145,12 +151,14 @@ if __name__ == "__main__":
                 worksheet.column_dimensions['A'].width = 15 # Rechnungsnummer
                 worksheet.column_dimensions['B'].width = 12 # Datum
                 worksheet.column_dimensions['C'].width = 25 # Lieferant
-                worksheet.column_dimensions['D'].width = 25 # Kunde
-                worksheet.column_dimensions['E'].width = 40 # Beschreibung
-                worksheet.column_dimensions['F'].width = 10 # Menge
-                worksheet.column_dimensions['G'].width = 18 # Einzelpreis
-                worksheet.column_dimensions['H'].width = 18 # Gesamtpreis
-                worksheet.column_dimensions['I'].width = 10 # MwSt
+                worksheet.column_dimensions['D'].width = 15 # Liefer ID
+                worksheet.column_dimensions['E'].width = 25 # Kunde
+                worksheet.column_dimensions['F'].width = 15 # Kunden ID
+                worksheet.column_dimensions['G'].width = 40 # Beschreibung
+                worksheet.column_dimensions['H'].width = 10 # Menge
+                worksheet.column_dimensions['I'].width = 18 # Einzelpreis
+                worksheet.column_dimensions['J'].width = 18 # Gesamtpreis
+                worksheet.column_dimensions['K'].width = 10 # MwSt
                 
                 writer.close()
                 
