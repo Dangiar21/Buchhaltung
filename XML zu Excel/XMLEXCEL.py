@@ -77,6 +77,18 @@ def parse_xml_to_list(xml_path):
         rechnungs_datum = get_text(dati_generali, 'Data')
         rechnungs_nummer = get_text(dati_generali, 'Numero')
         waehrung = get_text(dati_generali, 'Divisa', 'EUR')
+        
+        tipo_documento = get_text(dati_generali, 'TipoDocumento', 'TD01')
+        dokumenttyp = "Rechnung"
+        faktor = 1.0
+        if tipo_documento == 'TD04':
+            dokumenttyp = "Gutschrift"
+            faktor = -1.0
+        elif tipo_documento == 'TD05':
+            dokumenttyp = "Belastungsanzeige"
+        elif tipo_documento == 'TD08':
+            dokumenttyp = "Gutschrift (vereinfacht)"
+            faktor = -1.0
 
         # 3. Kunde (CessionarioCommittente)
         kunde_node = root.find('.//CessionarioCommittente//DatiAnagrafici//Anagrafica')
@@ -103,19 +115,20 @@ def parse_xml_to_list(xml_path):
             iva_text = get_text(linea, 'AliquotaIVA', '0.0')
             
             # Sichere Konvertierung in Float
-            try: qty = float(qty_text)
-            except ValueError: qty = 1.0
+            try: qty = float(qty_text) * faktor
+            except ValueError: qty = 1.0 * faktor
                 
             try: price = float(price_text)
             except ValueError: price = 0.0
                 
-            try: total = float(total_text)
+            try: total = float(total_text) * faktor
             except ValueError: total = 0.0
 
             try: iva = float(iva_text)
             except ValueError: iva = 0.0
             
             rechnungspositionen.append({
+                'Typ': dokumenttyp,
                 'Rechnungsnummer': rechnungs_nummer,
                 'Datum': rechnungs_datum,
                 'Lieferant': lieferant,
@@ -176,17 +189,24 @@ if __name__ == "__main__":
                 df.to_excel(writer, index=False, sheet_name='Rechnungen')
                 
                 worksheet = writer.sheets['Rechnungen']
-                worksheet.column_dimensions['A'].width = 15 # Rechnungsnummer
-                worksheet.column_dimensions['B'].width = 12 # Datum
-                worksheet.column_dimensions['C'].width = 25 # Lieferant
-                worksheet.column_dimensions['D'].width = 15 # Liefer ID
-                worksheet.column_dimensions['E'].width = 25 # Kunde
-                worksheet.column_dimensions['F'].width = 15 # Kunden ID
-                worksheet.column_dimensions['G'].width = 40 # Beschreibung
-                worksheet.column_dimensions['H'].width = 10 # Menge
-                worksheet.column_dimensions['I'].width = 18 # Einzelpreis
-                worksheet.column_dimensions['J'].width = 18 # Gesamtpreis
-                worksheet.column_dimensions['K'].width = 10 # MwSt
+                worksheet.column_dimensions['A'].width = 15 # Typ
+                worksheet.column_dimensions['B'].width = 15 # Rechnungsnummer
+                worksheet.column_dimensions['C'].width = 12 # Datum
+                worksheet.column_dimensions['D'].width = 25 # Lieferant
+                worksheet.column_dimensions['E'].width = 15 # Liefer ID
+                worksheet.column_dimensions['F'].width = 25 # Kunde
+                worksheet.column_dimensions['G'].width = 15 # Kunden ID
+                worksheet.column_dimensions['H'].width = 40 # Beschreibung
+                worksheet.column_dimensions['I'].width = 10 # Menge
+                worksheet.column_dimensions['J'].width = 18 # Einzelpreis
+                worksheet.column_dimensions['K'].width = 18 # Gesamtpreis
+                worksheet.column_dimensions['L'].width = 10 # MwSt
+                
+                # Währungsformat für Einzelpreis (J) und Gesamtpreis (K)
+                euro_format = '#,##0.00 €'
+                for row in range(2, worksheet.max_row + 1):
+                    worksheet.cell(row=row, column=10).number_format = euro_format
+                    worksheet.cell(row=row, column=11).number_format = euro_format
                 
                 writer.close()
                 
