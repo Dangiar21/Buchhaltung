@@ -86,7 +86,7 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
     client = genai.Client(api_key=api_key)
     
     # 2. Batch Processing
-    chunk_size = 15
+    chunk_size = 100
     current_model = 'gemini-3.5-flash'
     total_items = len(items_for_api)
     new_memory_entries = False
@@ -108,7 +108,8 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
             config = types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 response_mime_type="application/json",
-                temperature=0.1
+                temperature=0.1,
+                max_output_tokens=8192
             )
             
             try:
