@@ -251,17 +251,91 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
             
             shorten_description = ask_shorten_desc()
 
+            pdf_paths = []
             for pfad in paths:
-                if os.path.isfile(pfad) and (pfad.lower().endswith('.xml') or pfad.lower().endswith('.p7m')):
-                    alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description))
+                if os.path.isfile(pfad):
+                    lower_pfad = pfad.lower()
+                    if lower_pfad.endswith('.xml') or lower_pfad.endswith('.p7m'):
+                        alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description))
+                    elif lower_pfad.endswith('.pdf'):
+                        pdf_paths.append(pfad)
                 elif os.path.isdir(pfad):
                     print(f"\nDurchsuche Ordner (inkl. Unterordner): {pfad}")
                     for root_dir, _, files in os.walk(pfad):
                         for filename in files:
-                            if filename.lower().endswith('.xml') or filename.lower().endswith('.p7m'):
+                            lower_file = filename.lower()
+                            if lower_file.endswith('.xml') or lower_file.endswith('.p7m'):
                                 alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description))
+                            elif lower_file.endswith('.pdf'):
+                                pdf_paths.append(os.path.join(root_dir, filename))
                 else:
-                    print(f"Überspringe: {pfad} (Keine XML/P7M oder Ordner)")
+                    print(f"Überspringe: {pfad} (Keine XML/P7M/PDF oder Ordner)")
+                    
+            if pdf_paths:
+                import Buchung_KI
+                import PDF_Parser
+                api_key = Buchung_KI.get_api_key(base_dir)
+                if not api_key:
+                    print("\nWarnung: Kein Gemini API Key gefunden. PDFs können nicht verarbeitet werden.")
+                else:
+                    print(f"\nVerarbeite {len(pdf_paths)} PDF-Rechnungen mit Gemini OCR...")
+                    pdf_results = PDF_Parser.parse_pdfs(pdf_paths, api_key)
+                    
+                    for p_path, items in pdf_results.items():
+                        if not items:
+                            fehler_log.append(f"{os.path.basename(p_path)}: Konnte nicht per OCR ausgelesen werden.")
+                            continue
+                            
+                        abs_path = os.path.abspath(p_path)
+                        dateiname = os.path.basename(p_path)
+                        hyperlink_formel = f'=HYPERLINK("{abs_path}", "{dateiname}")'
+                        
+                        for pos in items:
+                            typ = pos.get('Typ', 'Rechnung')
+                            faktor = -1.0 if 'gutschrift' in typ.lower() else 1.0
+                            
+                            desc = pos.get('Beschreibung', 'Keine Beschreibung')
+                            desc_short = desc.split(',', 1)[0].strip() if (',' in desc and shorten_description) else desc
+                            desc_norm = re.sub(r'\s+', ' ', desc_short).strip().upper()
+                            
+                            lieferant = pos.get('Lieferant', 'Unbekannter Lieferant')
+                            liefer_id = str(pos.get('Liefer ID', '')).strip().replace(' ', '')
+                            kunde = pos.get('Kunde', 'Unbekannter Kunde')
+                            kunden_id = str(pos.get('Kunden ID', '')).strip().replace(' ', '')
+                            
+                            targa_gefunden = str(pos.get('Kennzeichen', '')).strip().upper().replace(' ', '')
+                            fahrzeugtyp = ""
+                            if targa_gefunden:
+                                fahrzeugtyp = targa_dict.get(targa_gefunden, "UNBEKANNT")
+                                if targa_gefunden not in targa_dict and targa_gefunden not in neue_targas_set:
+                                    neue_targas_set.add(targa_gefunden)
+                                    
+                            conto, is_pending = Buchung_Regeln.assign_account(desc_norm, desc_short, lieferant, liefer_id, kunden_id, rules_dict)
+                            
+                            qty = safe_float(pos.get('Menge', 1.0), 1.0, faktor)
+                            price = safe_float(pos.get('Einzelpreis', 0.0), 0.0)
+                            
+                            alle_positionen.append({
+                                'Typ': typ,
+                                'Rechnungsnummer': pos.get('Rechnungsnummer', ''),
+                                'Datum': pos.get('Datum', ''),
+                                'Lieferant': lieferant,
+                                'Liefer ID': liefer_id,
+                                'Kunde': kunde,
+                                'Kunden ID': kunden_id,
+                                'Beschreibung': desc_short,
+                                'Conto': conto,
+                                'is_pending': is_pending,
+                                'CdC': targa_gefunden,
+                                'Kennzeichen': targa_gefunden,
+                                'Fahrzeugtyp': fahrzeugtyp,
+                                'Menge': qty,
+                                f'Einzelpreis ({pos.get("Waehrung", "EUR")})': price,
+                                'Gesamtpreis': safe_float(pos.get('Gesamtpreis', 0.0), 0.0, faktor),
+                                'MwSt Satz': safe_float(pos.get('MwSt_Satz', 0.0), 0.0),
+                                'Dateiname': hyperlink_formel
+                            })
+            
             
             if alle_positionen:
                 # --- KI Fallback ---
