@@ -13,6 +13,7 @@ sys.path.append(os.path.join(script_dir, 'Programme', 'Buchungen erstellen'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'XML Preview'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'XML zu Excel'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'Analyse erstellen'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'KI_Training'))
 
 # Versuche Module zu importieren
 try:
@@ -40,6 +41,12 @@ try:
 except ImportError as e:
     print("Fehler beim Import von XMLPreviewGUI:", e)
     XMLPreviewFrame = None
+
+try:
+    from Cache_Editor import CacheEditorFrame
+except ImportError as e:
+    print("Fehler beim Import von Cache_Editor:", e)
+    CacheEditorFrame = None
 
 try:
     from Buchung_KI import ensure_konten_template
@@ -142,6 +149,9 @@ class BuchhaltungApp(TkDnD):
         self.sidebar_btn_4 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_analyse'], command=self.show_analyse, text_color=("black", "white"))
         self.sidebar_btn_4.grid(row=5, column=0, padx=20, pady=10)
 
+        self.sidebar_btn_5 = ctk.CTkButton(self.sidebar_frame, text="KI-Training (Cache)", command=self.show_cache_editor, text_color=("black", "white"))
+        self.sidebar_btn_5.grid(row=6, column=0, padx=20, pady=10)
+
         self.appearance_mode_switch = ctk.CTkSwitch(self.sidebar_frame, text=TRANSLATIONS[self.lang]['switch_dark'], command=self.toggle_appearance_mode)
         self.appearance_mode_switch.grid(row=7, column=0, padx=20, pady=(20, 10), sticky="s")
         
@@ -160,6 +170,7 @@ class BuchhaltungApp(TkDnD):
         self.build_xml_to_excel_frame()
         self.build_buchung_erstellen_frame()
         self.build_analyse_frame()
+        self.build_cache_editor_frame()
         
         # Load Clients
         self.base_kunden_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Kunden")
@@ -334,17 +345,37 @@ class BuchhaltungApp(TkDnD):
         else:
             print("Analyse_Config.py konnte nicht importiert werden.")
 
+    def build_cache_editor_frame(self):
+        if CacheEditorFrame:
+            self.cache_editor_frame = CacheEditorFrame(self.container, lambda: self.current_client)
+            self.cache_editor_frame.grid(row=0, column=0, sticky="nsew")
+        else:
+            self.cache_editor_frame = ctk.CTkFrame(self.container)
+            self.cache_editor_frame.grid(row=0, column=0, sticky="nsew")
+            ctk.CTkLabel(self.cache_editor_frame, text="Fehler: Cache_Editor.py nicht gefunden").pack(expand=True)
+            
+    def show_cache_editor(self):
+        self.active_tool = 'cache_editor'
+        self.hide_all_frames()
+        self.cache_editor_frame.grid()
+        self.reset_sidebar_buttons()
+        self.sidebar_btn_5.configure(fg_color=("gray75", "gray25"))
+        if hasattr(self.cache_editor_frame, 'load_data'):
+            self.cache_editor_frame.load_data()
+
     def hide_all_frames(self):
         self.xml_preview_frame.grid_remove()
         self.xml_to_excel_frame.grid_remove()
         self.buchung_erstellen_frame.grid_remove()
         self.analyse_frame.grid_remove()
+        self.cache_editor_frame.grid_remove()
         
     def reset_sidebar_buttons(self):
         self.sidebar_btn_1.configure(fg_color="transparent")
         self.sidebar_btn_2.configure(fg_color="transparent")
         self.sidebar_btn_3.configure(fg_color="transparent")
         self.sidebar_btn_4.configure(fg_color="transparent")
+        self.sidebar_btn_5.configure(fg_color="transparent")
 
     def show_xml_preview(self):
         self.active_tool = 'xml_preview'

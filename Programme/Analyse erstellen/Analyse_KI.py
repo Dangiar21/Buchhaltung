@@ -1,6 +1,10 @@
 import os
 import json
 import time
+import asyncio
+import shutil
+
+MAX_CONCURRENT_REQUESTS = 3
 
 def get_memory_path(nutzerdaten_dir):
     return os.path.join(nutzerdaten_dir, "Analyse_Memory.json")
@@ -17,11 +21,23 @@ def load_memory(nutzerdaten_dir):
 
 def save_memory(nutzerdaten_dir, memory):
     path = get_memory_path(nutzerdaten_dir)
+    backup_path = path.replace(".json", "_backup.json")
+    
+    # Backup erstellen, falls Original existiert
+    if os.path.exists(path):
+        try:
+            shutil.copy2(path, backup_path)
+        except Exception as e:
+            print(f"Warnung: Konnte kein Backup erstellen: {e}")
+            
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(memory, f, indent=4, ensure_ascii=False)
     except Exception as e:
         print(f"Fehler beim Speichern von Analyse_Memory.json: {e}")
+        # Ggf. Backup wiederherstellen
+        if os.path.exists(backup_path):
+            shutil.copy2(backup_path, path)
 
 def get_api_key(base_dir):
     try:
@@ -43,68 +59,17 @@ def get_api_key(base_dir):
                 return key
     return None
 
-def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_instruction):
-    """
-    Klassifiziert eine Liste von Items: [{'id': 'unique_id', 'desc': '...', 'supplier': '...'}, ...]
-    Gibt ein Dict zurück: {'unique_id': {'Kategorie1': 'Wert1', 'Kategorie2': 'Wert2'}, ...}
-    Nutzt den lokalen Cache, um API Calls zu minimieren.
-    """
-    if not items_to_classify:
-        return {}
-        
-    memory = load_memory(nutzerdaten_dir)
-    results = {}
-    items_for_api = []
-    
-    # 1. Cache Check
-    for item in items_to_classify:
-        supplier = item.get('supplier') or item.get('Lieferant', 'Unbekannt')
-        desc = item.get('desc') or item.get('Beschreibung', '')
-        # Key: "Lieferant | Beschreibung"
-        cache_key = f"{supplier} | {desc}".strip().upper()
-        if cache_key in memory:
-            results[item['id']] = memory[cache_key]
-        else:
-            item['cache_key'] = cache_key
-            items_for_api.append(item)
-            
-    if not items_for_api:
-        print(f"Alle {len(items_to_classify)} Positionen waren bereits im Cache!")
-        return results
-        
-    if not api_key:
-        print("Kein API Key gefunden! Es wurden nur Cache-Ergebnisse verwendet.")
-        return results
-        
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError:
-        print("google-genai ist nicht installiert.")
-        return results
-
-    client = genai.Client(api_key=api_key)
-    
-    # 2. Batch Processing
-    chunk_size = 100
-    current_model = 'gemini-3.5-flash'
-    total_items = len(items_for_api)
-    new_memory_entries = False
-    
-    print(f"\nSende {total_items} neue Positionen an die KI zur Analyse...")
-    
-    for i in range(0, total_items, chunk_size):
-        chunk = items_for_api[i:i+chunk_size]
-        
+async def process_batch_async(client, chunk, system_instruction, current_model, batch_num, total_batches, sem, memory, results):
+    async with sem:
+        print(f"-> Starte Batch {batch_num}/{total_batches} ({len(chunk)} Artikel)...")
         prompt_text = "Bitte klassifiziere folgende Artikel:\n"
         for local_idx, item in enumerate(chunk):
             supplier = item.get('supplier') or item.get('Lieferant', 'Unbekannt')
             desc = item.get('desc') or item.get('Beschreibung', '')
             prompt_text += f"[{local_idx}] {supplier} | {desc}\n"
             
-        print(f"-> Batch {i//chunk_size + 1}/{(total_items-1)//chunk_size + 1} ({len(chunk)} Artikel)...")
-        
         try:
+            from google.genai import types
             config = types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 response_mime_type="application/json",
@@ -113,7 +78,7 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
             )
             
             try:
-                response = client.models.generate_content(
+                response = await client.aio.models.generate_content(
                     model=current_model,
                     contents=prompt_text,
                     config=config
@@ -122,9 +87,9 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
                 error_msg = str(e)
                 if any(err in error_msg for err in ["429", "RESOURCE_EXHAUSTED", "Quota exceeded", "503", "UNAVAILABLE"]):
                     if current_model == 'gemini-3.5-flash':
-                        print(f"\nLimit für {current_model} erreicht. Wechsle zu gemini-3.1-flash-lite...")
+                        print(f"\nLimit für {current_model} erreicht. Wechsle für Batch {batch_num} zu gemini-3.1-flash-lite...")
                         current_model = 'gemini-3.1-flash-lite'
-                        response = client.models.generate_content(
+                        response = await client.aio.models.generate_content(
                             model=current_model,
                             contents=prompt_text,
                             config=config
@@ -142,6 +107,7 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
                     
                 batch_result = json.loads(json_text)
                 
+                new_entries = False
                 for local_idx_str, kategorien_dict in batch_result.items():
                     if local_idx_str.isdigit():
                         local_idx = int(local_idx_str)
@@ -149,22 +115,84 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
                             item = chunk[local_idx]
                             results[item['id']] = kategorien_dict
                             memory[item['cache_key']] = kategorien_dict
-                            new_memory_entries = True
+                            new_entries = True
+                
+                if new_entries:
+                    print(f"<- Batch {batch_num} erfolgreich abgeschlossen.")
+                return new_entries
                             
             except json.JSONDecodeError:
-                print("Fehler beim Parsen der Gemini-Antwort (kein gültiges JSON).")
-                print("Antwort:", response.text)
-                
-            # Rate Limiting Pause
-            if i + chunk_size < total_items:
-                time.sleep(3.0)
+                print(f"Fehler beim Parsen der Gemini-Antwort (kein gültiges JSON) in Batch {batch_num}.")
+                return False
                 
         except Exception as e:
-            print(f"Fehler bei der API Anfrage: {e}")
+            print(f"Fehler bei der API Anfrage in Batch {batch_num}: {e}")
+            return False
+
+async def async_analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_instruction):
+    if not items_to_classify:
+        return {}
+        
+    memory = load_memory(nutzerdaten_dir)
+    results = {}
+    items_for_api = []
+    
+    # 1. Cache Check
+    for item in items_to_classify:
+        supplier = item.get('supplier') or item.get('Lieferant', 'Unbekannt')
+        desc = item.get('desc') or item.get('Beschreibung', '')
+        cache_key = f"{supplier} | {desc}".strip().upper()
+        if cache_key in memory:
+            results[item['id']] = memory[cache_key]
+        else:
+            item['cache_key'] = cache_key
+            items_for_api.append(item)
             
+    if not items_for_api:
+        print(f"Alle {len(items_to_classify)} Positionen waren bereits im Cache!")
+        return results
+        
+    if not api_key:
+        print("Kein API Key gefunden! Es wurden nur Cache-Ergebnisse verwendet.")
+        return results
+        
+    try:
+        from google import genai
+    except ImportError:
+        print("google-genai ist nicht installiert.")
+        return results
+
+    client = genai.Client(api_key=api_key)
+    
+    # 2. Batch Processing
+    chunk_size = 100
+    current_model = 'gemini-3.5-flash'
+    total_items = len(items_for_api)
+    
+    print(f"\nSende {total_items} neue Positionen asynchron an die KI zur Analyse...")
+    
+    chunks = [items_for_api[i:i + chunk_size] for i in range(0, total_items, chunk_size)]
+    sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    
+    tasks = []
+    for i, chunk in enumerate(chunks):
+        task = process_batch_async(client, chunk, system_instruction, current_model, i + 1, len(chunks), sem, memory, results)
+        tasks.append(task)
+        
+    # Execute all batches concurrently
+    batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    new_memory_entries = any(res is True for res in batch_results if not isinstance(res, Exception))
+    
     # 3. Cache Speichern
     if new_memory_entries:
         save_memory(nutzerdaten_dir, memory)
         print("Analyse_Memory.json wurde aktualisiert.")
         
     return results
+
+def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_instruction):
+    """
+    Klassifiziert eine Liste von Items synchron durch asyncio wrapper.
+    """
+    return asyncio.run(async_analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_instruction))
