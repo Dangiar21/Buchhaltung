@@ -7,38 +7,16 @@ from typing import Dict, List, Any
 
 MAX_CONCURRENT_REQUESTS = 3
 
-def get_memory_path(nutzerdaten_dir: str) -> str:
-    return os.path.join(nutzerdaten_dir, "Konten_Memory.json")
+import sys
+script_dir = os.path.dirname(os.path.abspath(__file__))
+prog_dir = os.path.dirname(script_dir)
+if prog_dir not in sys.path:
+    sys.path.append(prog_dir)
 
-def load_memory(nutzerdaten_dir: str) -> Dict[str, str]:
-    path = get_memory_path(nutzerdaten_dir)
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Fehler beim Laden der Konten_Memory.json: {e}")
-    return {}
-
-def save_memory(nutzerdaten_dir: str, memory: Dict[str, str]) -> None:
-    path = get_memory_path(nutzerdaten_dir)
-    backup_path = path.replace(".json", "_backup.json")
-    
-    # Backup erstellen, falls Original existiert
-    if os.path.exists(path):
-        try:
-            shutil.copy2(path, backup_path)
-        except Exception as e:
-            print(f"Warnung: Konnte kein Backup erstellen: {e}")
-            
-    try:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(memory, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"Fehler beim Speichern der Konten_Memory.json: {e}")
-        # Ggf. Backup wiederherstellen
-        if os.path.exists(backup_path):
-            shutil.copy2(backup_path, path)
+try:
+    from DatabaseManager import get_db
+except ImportError:
+    pass
 
 def get_api_key(base_dir: str) -> str:
     try:
@@ -60,7 +38,23 @@ def get_api_key(base_dir: str) -> str:
                 return key
     return None
 
-def build_system_instruction(konten: List[Dict[str, str]]) -> str:
+def build_system_instruction(nutzerdaten_dir: str) -> str:
+    konten = []
+    client_rules_path = os.path.join(nutzerdaten_dir, "Kunden_KontenRegeln.xlsx")
+    if os.path.exists(client_rules_path):
+        import pandas as pd
+        try:
+            df = pd.read_excel(client_rules_path, sheet_name='Kontenplan')
+            for _, row in df.iterrows():
+                if pd.notna(row.get('Konto-Nummer')):
+                    konten.append({
+                        "Konto": str(row['Konto-Nummer']).replace('.0', ''),
+                        "Bezeichnung": str(row.get('Bezeichnung', '')),
+                        "Beschreibung": ""
+                    })
+        except Exception as e:
+            print("Fehler beim Lesen des Kontenplans:", e)
+
     instruction = "Du bist ein KI-Buchhalter für den italienischen SDI Standard (XML/P7M).\n"
     instruction += "Deine Aufgabe ist es, Rechnungs-Artikel einem passenden FIBU-Konto zuzuordnen.\n\n"
     
@@ -144,9 +138,37 @@ async def process_batch_async(client, chunk, system_instruction, current_model, 
             print(f"Fehler bei der API Anfrage in Batch {batch_num}: {e}")
             return False
 
-async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], api_key: str, konten: List[Dict[str, str]]) -> Dict[str, str]:
+async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], api_key: str, nutzerdaten_dir: str) -> Dict[str, str]:
     if not items_to_classify:
         return {}
+        
+    kunden_id = os.path.basename(os.path.dirname(nutzerdaten_dir))
+    db = get_db()
+    memory = db.get_konten_cache(kunden_id)
+    new_entries = {}
+    
+    results = {}
+    items_for_api = []
+    
+    # 1. Cache Check
+    for item in items_to_classify:
+        supplier = item.get('supplier') or item.get('Lieferant', 'Unbekannt')
+        desc = item.get('desc') or item.get('Beschreibung', '')
+        cache_key = f"{supplier} | {desc}".strip().upper()
+        
+        if cache_key in memory:
+            results[item['id']] = memory[cache_key]
+        else:
+            item['cache_key'] = cache_key
+            items_for_api.append(item)
+            
+    if not items_for_api:
+        print(f"Alle {len(items_to_classify)} Positionen waren bereits im Cache!")
+        return results
+        
+    if not api_key:
+        print("Kein API Key gefunden! Es wurden nur Cache-Ergebnisse verwendet.")
+        return results
         
     try:
         from google import genai
@@ -155,16 +177,16 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
         return {}
         
     client = genai.Client(api_key=api_key)
-    system_instruction = build_system_instruction(konten)
+    system_instruction = build_system_instruction(nutzerdaten_dir)
     
     chunk_size = 100
     current_model = 'gemini-3.5-flash'
-    total_items = len(items_to_classify)
+    total_items = len(items_for_api)
     results = {}
     
     print(f"\nSende {total_items} neue Positionen asynchron an die KI zur Kontierung...")
     
-    chunks = [items_to_classify[i:i + chunk_size] for i in range(0, total_items, chunk_size)]
+    chunks = [items_for_api[i:i + chunk_size] for i in range(0, total_items, chunk_size)]
     sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     
     tasks = []
@@ -174,10 +196,20 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
         
     await asyncio.gather(*tasks, return_exceptions=True)
     
+    # Track new entries for DB
+    for item in items_for_api:
+        if item['id'] in results:
+            new_entries[item['cache_key']] = results[item['id']]
+            
+    # Save cache
+    if new_entries:
+        db.save_konten_cache_batch(kunden_id, new_entries)
+        print("SQL Cache (Konten) wurde aktualisiert.")
+    
     return results
 
-def classify_items_with_ai(items_to_classify: List[Dict[str, Any]], api_key: str, konten: List[Dict[str, str]]) -> Dict[str, str]:
+def ask_gemini_batch(items_to_classify: List[Dict[str, Any]], api_key: str, nutzerdaten_dir: str) -> Dict[str, str]:
     """
-    Synchronous wrapper for the async AI classification function.
+    Synchronous wrapper for the async AI classification function (Legacy Alias).
     """
-    return asyncio.run(async_classify_items_with_ai(items_to_classify, api_key, konten))
+    return asyncio.run(async_classify_items_with_ai(items_to_classify, api_key, nutzerdaten_dir))

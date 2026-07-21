@@ -4,6 +4,11 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill
 from openpyxl.formatting.rule import CellIsRule
 import pandas as pd
+import sys
+script_dir = os.path.dirname(os.path.abspath(__file__))
+prog_dir = os.path.dirname(script_dir)
+if prog_dir not in sys.path:
+    sys.path.append(prog_dir)
 
 def normalize_id(val):
     """Bulletproof ID normalizer: handles NaN, float casts (.0), casing, and leading zeros."""
@@ -141,11 +146,7 @@ def ensure_rule_file(file_path):
 
 def load_rules(global_path, client_path):
     """
-    Lädt die Regeln aus beiden Dateien und gibt ein Regel-Dictionary zurück.
-    Priorität:
-    1. Kunde Stichwort
-    2. Global Stichwort
-    3. Global Lieferant
+    Lädt die Regeln über den DatabaseManager (CQRS). Excel dient als Frontend.
     """
     rules = {
         "ai_confirmed": {},
@@ -155,70 +156,118 @@ def load_rules(global_path, client_path):
         "global_lieferant": {}
     }
     
-    # Globale Regeln laden
+    try:
+        from DatabaseManager import get_db
+        db = get_db()
+    except ImportError:
+        print("Fehler: DatabaseManager nicht gefunden.")
+        return rules
+
+    # 1. Global Sync
     if os.path.exists(global_path):
-        try:
-            df_g_lief = pd.read_excel(global_path, sheet_name="Lieferanten-Regeln")
-            df_g_stich = pd.read_excel(global_path, sheet_name="Stichwort-Regeln")
-            
-            for _, row in df_g_lief.iterrows():
-                lief = str(row.iloc[0]).strip().lower()
-                konto_raw = str(row.iloc[1]).strip()
-                konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
-                if lief and lief != 'nan' and konto:
-                    rules["global_lieferant"][lief] = konto
-                    
-            for _, row in df_g_stich.iterrows():
-                stich = str(row.iloc[0]).strip().lower()
-                konto_raw = str(row.iloc[1]).strip()
-                konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
-                if stich and stich != 'nan' and konto:
-                    rules["global_stichwort"][stich] = konto
-                    
-            if "KI-Zuweisungen" in pd.ExcelFile(global_path).sheet_names:
-                df_g_ki = pd.read_excel(global_path, sheet_name="KI-Zuweisungen")
-                for _, row in df_g_ki.iterrows():
-                    lief_id = normalize_id(row.get("Lieferant ID", ""))
-                    kunden_id = normalize_id(row.get("Kunden ID", ""))
-                    
-                    desc_raw = row.get("Beschreibung", "")
-                    if pd.isna(desc_raw) or str(desc_raw).strip().lower() == 'nan':
-                        desc = ""
-                    else:
-                        desc = str(desc_raw).strip().upper()
+        global_mtime = os.path.getmtime(global_path)
+        last_sync = db.get_sync_status("GLOBAL", "global_rules")
+        
+        if global_mtime > last_sync:
+            print("Synchronisiere globale Regeln aus Excel in die SQLite-Datenbank...")
+            try:
+                df_g_lief = pd.read_excel(global_path, sheet_name="Lieferanten-Regeln")
+                df_g_stich = pd.read_excel(global_path, sheet_name="Stichwort-Regeln")
+                
+                rules_list = []
+                for _, row in df_g_lief.iterrows():
+                    lief = str(row.iloc[0]).strip().lower()
+                    konto_raw = str(row.iloc[1]).strip()
+                    konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    if lief and lief != 'nan' and konto:
+                        rules_list.append({"prioritaet": 3, "lieferant": lief, "konto": konto, "regel_typ": "global_lieferant"})
                         
-                    konto_raw = row.get("Konto", "")
-                    if pd.isna(konto_raw) or str(konto_raw).strip().lower() == 'nan':
-                        konto = ""
-                    else:
-                        konto = str(konto_raw).strip().split(' ')[0]
+                for _, row in df_g_stich.iterrows():
+                    stich = str(row.iloc[0]).strip().lower()
+                    konto_raw = str(row.iloc[1]).strip()
+                    konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    if stich and stich != 'nan' and konto:
+                        rules_list.append({"prioritaet": 2, "suchbegriff": stich, "konto": konto, "regel_typ": "global_stichwort"})
                         
-                    status = str(row.get("Status", "")).strip().upper()
-                    
-                    if konto: # Wir speichern die Regel nur, wenn wir ein Konto haben
-                        key = (lief_id, desc, kunden_id)
-                        if status == "BESTÄTIGT" or status == "OK" or status == "X":
-                            rules["ai_confirmed"][key] = konto
-                        else:
-                            rules["ai_pending"][key] = konto
+                if "KI-Zuweisungen" in pd.ExcelFile(global_path).sheet_names:
+                    df_g_ki = pd.read_excel(global_path, sheet_name="KI-Zuweisungen")
+                    for _, row in df_g_ki.iterrows():
+                        lief_id = normalize_id(row.get("Lieferant ID", ""))
+                        k_id = normalize_id(row.get("Kunden ID", ""))
+                        desc_raw = row.get("Beschreibung", "")
+                        desc = "" if (pd.isna(desc_raw) or str(desc_raw).strip().lower() == 'nan') else str(desc_raw).strip().upper()
+                        konto_raw = row.get("Konto", "")
+                        konto = "" if (pd.isna(konto_raw) or str(konto_raw).strip().lower() == 'nan') else str(konto_raw).strip().split(' ')[0]
+                        status = str(row.get("Status", "")).strip().upper()
+                        
+                        if konto:
+                            is_pending = not (status == "BESTÄTIGT" or status == "OK" or status == "X")
+                            typ = "ai_pending" if is_pending else "ai_confirmed"
+                            rules_list.append({
+                                "prioritaet": 0, "regel_typ": typ, "lieferant_id": lief_id, "suchbegriff": desc, 
+                                "konto": konto, "target_kunden_id": k_id, "status": status
+                            })
                             
-        except Exception as e:
-            print(f"Fehler beim Laden globaler Regeln: {e}")
-            
-    # Kunden-Regeln laden
-    if os.path.exists(client_path):
-        try:
-            df_c_stich = pd.read_excel(client_path, sheet_name="Stichwort-Regeln")
-            
-            for _, row in df_c_stich.iterrows():
-                stich = str(row.iloc[0]).strip().lower()
-                konto_raw = str(row.iloc[1]).strip()
-                konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
-                if stich and stich != 'nan' and konto:
-                    rules["client_stichwort"][stich] = konto
-        except Exception as e:
-            print(f"Fehler beim Laden kunden-spezifischer Regeln: {e}")
-            
+                df_sync = pd.DataFrame(rules_list)
+                db.sync_rules("GLOBAL", "global_rules", df_sync)
+                db.set_sync_status("GLOBAL", "global_rules", global_mtime)
+            except Exception as e:
+                print(f"Fehler beim Sync der globalen Regeln: {e}")
+
+    # 2. Client Sync
+    client_id = ""
+    if client_path and os.path.exists(client_path):
+        client_id = os.path.basename(os.path.dirname(client_path))
+        if client_id == "Nutzerdaten":
+             client_id = os.path.basename(os.path.dirname(os.path.dirname(client_path)))
+             
+        client_mtime = os.path.getmtime(client_path)
+        last_sync = db.get_sync_status(client_id, "client_rules")
+        
+        if client_mtime > last_sync:
+            print(f"Synchronisiere kunden-spezifische Regeln für {client_id} aus Excel in SQLite...")
+            try:
+                df_c_stich = pd.read_excel(client_path, sheet_name="Stichwort-Regeln")
+                rules_list = []
+                for _, row in df_c_stich.iterrows():
+                    stich = str(row.iloc[0]).strip().lower()
+                    konto_raw = str(row.iloc[1]).strip()
+                    konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    if stich and stich != 'nan' and konto:
+                        rules_list.append({"prioritaet": 1, "suchbegriff": stich, "konto": konto, "regel_typ": "client_stichwort"})
+                        
+                df_sync = pd.DataFrame(rules_list)
+                db.sync_rules(client_id, "client_rules", df_sync)
+                db.set_sync_status(client_id, "client_rules", client_mtime)
+            except Exception as e:
+                print(f"Fehler beim Sync der kunden-spezifischen Regeln: {e}")
+                
+    # 3. Load from SQLite into memory dict
+    try:
+        # Load Global
+        df_global = db.get_rules("GLOBAL", "global_rules")
+        if not df_global.empty:
+            for _, row in df_global.iterrows():
+                typ = row['regel_typ']
+                if typ == "global_lieferant":
+                    rules["global_lieferant"][row['lieferant']] = row['konto']
+                elif typ == "global_stichwort":
+                    rules["global_stichwort"][row['suchbegriff']] = row['konto']
+                elif typ in ["ai_confirmed", "ai_pending"]:
+                    key = (row.get('lieferant_id', ''), row.get('suchbegriff', ''), row.get('target_kunden_id', ''))
+                    rules[typ][key] = row['konto']
+                    
+        # Load Client
+        if client_id:
+            df_client = db.get_rules(client_id, "client_rules")
+            if not df_client.empty:
+                for _, row in df_client.iterrows():
+                    if row['regel_typ'] == "client_stichwort":
+                        rules["client_stichwort"][row['suchbegriff']] = row['konto']
+                        
+    except Exception as e:
+        print(f"Fehler beim Laden der Regeln aus SQLite: {e}")
+
     return rules
 
 def assign_account(desc_norm, desc, supplier_name, supplier_vat, kunden_id, rules):

@@ -2,6 +2,16 @@ import os
 import json
 import shutil
 import customtkinter as ctk
+import sys
+script_dir = os.path.dirname(os.path.abspath(__file__))
+prog_dir = os.path.dirname(script_dir)
+if prog_dir not in sys.path:
+    sys.path.append(prog_dir)
+
+try:
+    from DatabaseManager import get_db
+except ImportError:
+    pass
 
 class CacheEditorFrame(ctk.CTkFrame):
     def __init__(self, master, current_client_callback):
@@ -54,43 +64,36 @@ class CacheEditorFrame(ctk.CTkFrame):
         self.status_label.configure(text=text, text_color=color)
         self.after(3000, lambda: self.status_label.configure(text=""))
         
-    def get_file_path(self):
+    def get_client(self):
         client = self.current_client_callback()
-        if not client:
+        if not client or client == "Kein Kunde":
             return None
-            
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        nutzerdaten_dir = os.path.join(base_dir, "Kunden", client, "Nutzerdaten")
+        return client
         
-        if self.cache_type_var.get() == "Sektorenanalyse":
-            return os.path.join(nutzerdaten_dir, "Analyse_Memory.json")
-        else:
-            return os.path.join(nutzerdaten_dir, "Konten_Memory.json")
-            
     def load_data(self, *args):
         # Clear current UI
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
         self.entries.clear()
         
-        self.current_filepath = self.get_file_path()
-        if not self.current_filepath:
+        client = self.get_client()
+        if not client:
             ctk.CTkLabel(self.scroll_frame, text="Bitte zuerst einen Kunden auswählen!").grid(row=0, column=0, pady=20)
             return
             
-        if not os.path.exists(self.current_filepath):
-            ctk.CTkLabel(self.scroll_frame, text="Noch keine KI-Daten (Cache) für diesen Kunden vorhanden.").grid(row=0, column=0, pady=20)
-            return
-            
         try:
-            with open(self.current_filepath, 'r', encoding='utf-8') as f:
-                self.current_data = json.load(f)
+            db = get_db()
+            cache_type = self.cache_type_var.get()
+            if cache_type == "Sektorenanalyse":
+                self.current_data = db.get_analyse_cache(client)
+            else:
+                self.current_data = db.get_konten_cache(client)
         except Exception as e:
-            ctk.CTkLabel(self.scroll_frame, text=f"Fehler beim Laden: {e}").grid(row=0, column=0, pady=20)
+            ctk.CTkLabel(self.scroll_frame, text=f"Fehler beim Laden aus der Datenbank: {e}").grid(row=0, column=0, pady=20)
             return
             
         if not self.current_data:
-            ctk.CTkLabel(self.scroll_frame, text="Das Gedächtnis ist leer.").grid(row=0, column=0, pady=20)
+            ctk.CTkLabel(self.scroll_frame, text="Das Gedächtnis in der Datenbank ist leer.").grid(row=0, column=0, pady=20)
             return
             
         # Headers
@@ -129,38 +132,36 @@ class CacheEditorFrame(ctk.CTkFrame):
             data["del_btn"].configure(text="Rückgängig", fg_color="gray", hover_color="darkgray")
             
     def save_data(self):
-        if not self.current_filepath or not os.path.exists(self.current_filepath):
+        client = self.get_client()
+        if not client:
             return
             
-        new_data = {}
-        for key, data in self.entries.items():
-            if not data["deleted"]:
-                val_str = data["entry"].get()
-                try:
-                    # Versuche als dict zu parsen, falls es Sektorenanalyse ist
-                    if self.cache_type_var.get() == "Sektorenanalyse":
-                        parsed = json.loads(val_str)
-                    else:
-                        parsed = val_str
-                    new_data[key] = parsed
-                except:
-                    # Fallback auf reinen String
-                    new_data[key] = val_str
+        db = get_db()
+        cache_type = self.cache_type_var.get()
+        new_entries = {}
+        
+        try:
+            for key, data in self.entries.items():
+                if data["deleted"]:
+                    db.delete_cache_entry(cache_type, client, key)
+                else:
+                    val_str = data["entry"].get()
+                    try:
+                        if cache_type == "Sektorenanalyse":
+                            parsed = json.loads(val_str)
+                        else:
+                            parsed = val_str
+                        new_entries[key] = parsed
+                    except:
+                        new_entries[key] = val_str
+                        
+            if new_entries:
+                if cache_type == "Sektorenanalyse":
+                    db.save_analyse_cache_batch(client, new_entries)
+                else:
+                    db.save_konten_cache_batch(client, new_entries)
                     
-        # Backup erstellen
-        backup_path = self.current_filepath.replace(".json", "_backup.json")
-        try:
-            shutil.copy2(self.current_filepath, backup_path)
+            self.show_status("Erfolgreich in der Datenbank gespeichert!", "green")
+            self.load_data()
         except Exception as e:
-            print("Backup Fehler:", e)
-            
-        try:
-            with open(self.current_filepath, 'w', encoding='utf-8') as f:
-                json.dump(new_data, f, indent=4, ensure_ascii=False)
-            self.show_status("Erfolgreich gespeichert!", "green")
-            self.current_data = new_data
-        except Exception as e:
-            self.show_status(f"Fehler: {e}", "red")
-            # Rollback
-            if os.path.exists(backup_path):
-                shutil.copy2(backup_path, self.current_filepath)
+            self.show_status(f"Fehler beim Speichern in DB: {e}", "red")

@@ -9,35 +9,16 @@ MAX_CONCURRENT_REQUESTS = 3
 def get_memory_path(nutzerdaten_dir):
     return os.path.join(nutzerdaten_dir, "Analyse_Memory.json")
 
-def load_memory(nutzerdaten_dir):
-    path = get_memory_path(nutzerdaten_dir)
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Fehler beim Laden von Analyse_Memory.json: {e}")
-    return {}
+import sys
+script_dir = os.path.dirname(os.path.abspath(__file__))
+prog_dir = os.path.dirname(script_dir)
+if prog_dir not in sys.path:
+    sys.path.append(prog_dir)
 
-def save_memory(nutzerdaten_dir, memory):
-    path = get_memory_path(nutzerdaten_dir)
-    backup_path = path.replace(".json", "_backup.json")
-    
-    # Backup erstellen, falls Original existiert
-    if os.path.exists(path):
-        try:
-            shutil.copy2(path, backup_path)
-        except Exception as e:
-            print(f"Warnung: Konnte kein Backup erstellen: {e}")
-            
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(memory, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"Fehler beim Speichern von Analyse_Memory.json: {e}")
-        # Ggf. Backup wiederherstellen
-        if os.path.exists(backup_path):
-            shutil.copy2(backup_path, path)
+try:
+    from DatabaseManager import get_db
+except ImportError:
+    pass
 
 def get_api_key(base_dir):
     try:
@@ -59,7 +40,7 @@ def get_api_key(base_dir):
                 return key
     return None
 
-async def process_batch_async(client, chunk, system_instruction, current_model, batch_num, total_batches, sem, memory, results):
+async def process_batch_async(client, chunk, system_instruction, current_model, batch_num, total_batches, sem, memory, results, new_entries):
     async with sem:
         print(f"-> Starte Batch {batch_num}/{total_batches} ({len(chunk)} Artikel)...")
         prompt_text = "Bitte klassifiziere folgende Artikel:\n"
@@ -107,19 +88,19 @@ async def process_batch_async(client, chunk, system_instruction, current_model, 
                     
                 batch_result = json.loads(json_text)
                 
-                new_entries = False
+                new_entries_found = False
                 for local_idx_str, kategorien_dict in batch_result.items():
                     if local_idx_str.isdigit():
                         local_idx = int(local_idx_str)
                         if 0 <= local_idx < len(chunk):
                             item = chunk[local_idx]
                             results[item['id']] = kategorien_dict
-                            memory[item['cache_key']] = kategorien_dict
-                            new_entries = True
+                            new_entries[item['cache_key']] = kategorien_dict
+                            new_entries_found = True
                 
-                if new_entries:
+                if new_entries_found:
                     print(f"<- Batch {batch_num} erfolgreich abgeschlossen.")
-                return new_entries
+                return new_entries_found
                             
             except json.JSONDecodeError:
                 print(f"Fehler beim Parsen der Gemini-Antwort (kein gültiges JSON) in Batch {batch_num}.")
@@ -133,7 +114,11 @@ async def async_analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_di
     if not items_to_classify:
         return {}
         
-    memory = load_memory(nutzerdaten_dir)
+    kunden_id = os.path.basename(os.path.dirname(nutzerdaten_dir))
+    db = get_db()
+    memory = db.get_analyse_cache(kunden_id)
+    new_entries = {}
+    
     results = {}
     items_for_api = []
     
@@ -176,7 +161,7 @@ async def async_analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_di
     
     tasks = []
     for i, chunk in enumerate(chunks):
-        task = process_batch_async(client, chunk, system_instruction, current_model, i + 1, len(chunks), sem, memory, results)
+        task = process_batch_async(client, chunk, system_instruction, current_model, i + 1, len(chunks), sem, memory, results, new_entries)
         tasks.append(task)
         
     # Execute all batches concurrently
@@ -185,9 +170,9 @@ async def async_analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_di
     new_memory_entries = any(res is True for res in batch_results if not isinstance(res, Exception))
     
     # 3. Cache Speichern
-    if new_memory_entries:
-        save_memory(nutzerdaten_dir, memory)
-        print("Analyse_Memory.json wurde aktualisiert.")
+    if new_entries:
+        db.save_analyse_cache_batch(kunden_id, new_entries)
+        print("SQL Cache (Analyse) wurde aktualisiert.")
         
     return results
 
