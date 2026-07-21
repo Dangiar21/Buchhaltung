@@ -1,5 +1,6 @@
 # Ignoriere Kunden-Daten (Rechnungen, Buchhaltung, Personenbezogene Daten)
-Kunden/
+Kunden/*
+!Kunden/.gitkeep
 
 # Ignoriere sensible API Keys
 Systemdaten/gemini_api_key.txt
