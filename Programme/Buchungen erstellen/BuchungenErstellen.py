@@ -489,6 +489,14 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 
                 print(f"Erfolgreich gespeichert unter: {excel_path}")
                 
+                # --- B Point CSV Export ---
+                try:
+                    import BPoint_Export
+                    csv_path = excel_path.replace('.xlsx', '_PrimaNota.csv')
+                    BPoint_Export.export_to_bpoint_csv(df, csv_path)
+                except Exception as e:
+                    print(f"Fehler beim B Point CSV-Export: {e}")
+                
                 append_new_targas_to_excel(targa_file, neue_targas_set)
                 
                 if fehler_log:
