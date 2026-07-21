@@ -5,11 +5,14 @@ import sys
 import threading
 import io
 import re
+import queue
 
 # Modulpfade hinzufügen, damit die Unterordner erkannt werden
 script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
 sys.path.append(os.path.join(script_dir, 'Programme', 'Buchungen erstellen'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'XML Preview'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'XML zu Excel'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'Analyse erstellen'))
 
 # Versuche Module zu importieren
 try:
@@ -17,6 +20,20 @@ try:
 except ImportError as e:
     print("Fehler beim Import von BuchungenErstellen:", e)
     run_conversion = None
+
+try:
+    from XMLzuExcel import run_conversion as run_xml_to_excel
+except ImportError as e:
+    print("Fehler beim Import von XMLzuExcel:", e)
+    run_xml_to_excel = None
+
+try:
+    from Analyse_Main import run_analyse
+    import Analyse_Config
+except ImportError as e:
+    print("Fehler beim Import von Analyse_Main:", e)
+    run_analyse = None
+    Analyse_Config = None
 
 try:
     from XMLPreviewGUI import XMLPreviewFrame
@@ -41,24 +58,23 @@ class TkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
         self.TkdndVersion = TkinterDnD._require(self)
 
 class RedirectText(io.StringIO):
-    def __init__(self, text_widget):
+    def __init__(self, text_queue, target_widget):
         super().__init__()
-        self.text_widget = text_widget
+        self.text_queue = text_queue
+        self.target_widget = target_widget
 
     def write(self, string):
-        self.text_widget.configure(state="normal")
-        self.text_widget.insert("end", string)
-        self.text_widget.see("end")
-        self.text_widget.configure(state="disabled")
+        self.text_queue.put((string, self.target_widget))
         
     def flush(self):
         pass
 
 TRANSLATIONS = {
     'DE': {
-        'btn_xml_excel': 'Buchungen erstellen',
         'btn_xml_preview': 'XML Preview',
-        'btn_pdf_gen': 'PDF Generator',
+        'btn_xml_to_excel': 'XML zu Excel',
+        'btn_buchung_erstellen': 'Buchung erstellen',
+        'btn_analyse': 'Analyse erstellen',
         'drop_label': 'Ordner oder XML/P7M Dateien hier ablegen\n(Drag & Drop)',
         'btn_files': 'Dateien auswählen',
         'btn_folder': 'Ordner auswählen',
@@ -66,9 +82,10 @@ TRANSLATIONS = {
         'switch_dark': 'Dark Mode'
     },
     'IT': {
-        'btn_xml_excel': 'Crea Registrazioni',
         'btn_xml_preview': 'Anteprima XML',
-        'btn_pdf_gen': 'Generatore PDF',
+        'btn_xml_to_excel': 'XML a Excel',
+        'btn_buchung_erstellen': 'Crea Registrazioni',
+        'btn_analyse': 'Crea Analisi',
         'drop_label': 'Trascina qui file XML/P7M o cartelle\n(Drag & Drop)',
         'btn_files': 'Seleziona file',
         'btn_folder': 'Seleziona cartelle',
@@ -92,8 +109,8 @@ class BuchhaltungApp(TkDnD):
         # --- Sidebar ---
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(4, weight=1)
-        self.sidebar_frame.grid_rowconfigure(5, weight=0)
+        self.sidebar_frame.grid_rowconfigure(6, weight=1)
+        self.sidebar_frame.grid_rowconfigure(7, weight=0)
 
         self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="Buchhaltung", font=ctk.CTkFont(size=20, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
@@ -113,24 +130,24 @@ class BuchhaltungApp(TkDnD):
         self.btn_new_client = ctk.CTkButton(self.client_frame, text="+ Neuer Kunde", command=self.open_new_client_dialog, fg_color="#2b9e4a", hover_color="#217a39")
         self.btn_new_client.pack(fill="x")
 
-        self.sidebar_btn_1 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_excel'], command=self.show_xml_excel, text_color=("black", "white"))
+        self.sidebar_btn_1 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_preview'], command=self.show_xml_preview, text_color=("black", "white"))
         self.sidebar_btn_1.grid(row=2, column=0, padx=20, pady=10)
 
-        self.sidebar_btn_2 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_preview'], command=self.show_xml_preview, text_color=("black", "white"))
+        self.sidebar_btn_2 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_to_excel'], command=self.show_xml_to_excel, text_color=("black", "white"))
         self.sidebar_btn_2.grid(row=3, column=0, padx=20, pady=10)
 
-        self.sidebar_btn_3 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_pdf_gen'], state="disabled", text_color=("black", "white"))
+        self.sidebar_btn_3 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_buchung_erstellen'], command=self.show_buchung_erstellen, text_color=("black", "white"))
         self.sidebar_btn_3.grid(row=4, column=0, padx=20, pady=10)
         
-        # Leerraum auffüllen
-        self.sidebar_frame.grid_rowconfigure(5, weight=1)
+        self.sidebar_btn_4 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_analyse'], command=self.show_analyse, text_color=("black", "white"))
+        self.sidebar_btn_4.grid(row=5, column=0, padx=20, pady=10)
 
         self.appearance_mode_switch = ctk.CTkSwitch(self.sidebar_frame, text=TRANSLATIONS[self.lang]['switch_dark'], command=self.toggle_appearance_mode)
-        self.appearance_mode_switch.grid(row=6, column=0, padx=20, pady=(20, 10), sticky="s")
+        self.appearance_mode_switch.grid(row=7, column=0, padx=20, pady=(20, 10), sticky="s")
         
         self.lang_switch = ctk.CTkSegmentedButton(self.sidebar_frame, values=["DE", "IT"], command=self.change_language)
         self.lang_switch.set("DE")
-        self.lang_switch.grid(row=7, column=0, padx=20, pady=(10, 20), sticky="s")
+        self.lang_switch.grid(row=8, column=0, padx=20, pady=(10, 20), sticky="s")
 
         # --- Container (Right Side) ---
         self.container = ctk.CTkFrame(self, fg_color="transparent")
@@ -139,8 +156,10 @@ class BuchhaltungApp(TkDnD):
         self.container.grid_rowconfigure(0, weight=1)
 
         # --- Frames ---
-        self.build_xml_excel_frame()
         self.build_xml_preview_frame()
+        self.build_xml_to_excel_frame()
+        self.build_buchung_erstellen_frame()
+        self.build_analyse_frame()
         
         # Load Clients
         self.base_kunden_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Kunden")
@@ -151,18 +170,35 @@ class BuchhaltungApp(TkDnD):
         self.all_clients = []
         self.refresh_clients()
         
+        self.active_tool = None
+        
+        self.print_queue = queue.Queue()
+        self.process_print_queue()
+        
         # Startansicht
-        self.show_xml_excel()
+        self.show_xml_preview()
 
-    def build_xml_excel_frame(self):
-        self.xml_excel_frame = ctk.CTkFrame(self.container, fg_color="transparent")
-        self.xml_excel_frame.grid(row=0, column=0, sticky="nsew")
-        self.xml_excel_frame.grid_columnconfigure(0, weight=1)
-        self.xml_excel_frame.grid_rowconfigure(0, weight=1)
-        self.xml_excel_frame.grid_rowconfigure(1, weight=1)
+    def process_print_queue(self):
+        while not self.print_queue.empty():
+            try:
+                msg, target_widget = self.print_queue.get_nowait()
+                target_widget.configure(state="normal")
+                target_widget.insert("end", msg)
+                target_widget.see("end")
+                target_widget.configure(state="disabled")
+            except queue.Empty:
+                break
+        self.after(100, self.process_print_queue)
+
+    def build_buchung_erstellen_frame(self):
+        self.buchung_erstellen_frame = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.buchung_erstellen_frame.grid(row=0, column=0, sticky="nsew")
+        self.buchung_erstellen_frame.grid_columnconfigure(0, weight=1)
+        self.buchung_erstellen_frame.grid_rowconfigure(0, weight=1)
+        self.buchung_erstellen_frame.grid_rowconfigure(1, weight=1)
 
         # Drag and Drop Area
-        self.drop_frame = ctk.CTkFrame(self.xml_excel_frame, fg_color=("gray75", "gray25"), corner_radius=15)
+        self.drop_frame = ctk.CTkFrame(self.buchung_erstellen_frame, fg_color=("gray75", "gray25"), corner_radius=15)
         self.drop_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
         self.drop_frame.grid_columnconfigure(0, weight=1)
         self.drop_frame.grid_rowconfigure(0, weight=1)
@@ -182,7 +218,7 @@ class BuchhaltungApp(TkDnD):
         self.btn_folder.grid(row=0, column=1, padx=10)
 
         # Log Area
-        self.log_textbox = ctk.CTkTextbox(self.xml_excel_frame, height=200)
+        self.log_textbox = ctk.CTkTextbox(self.buchung_erstellen_frame, height=200)
         self.log_textbox.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
         self.log_textbox.configure(state="disabled")
 
@@ -199,22 +235,163 @@ class BuchhaltungApp(TkDnD):
             self.xml_preview_frame.grid(row=0, column=0, sticky="nsew")
             ctk.CTkLabel(self.xml_preview_frame, text="Fehler: XMLPreviewGUI.py nicht gefunden").pack(expand=True)
 
-    def show_xml_excel(self):
-        self.xml_preview_frame.grid_remove()
-        self.xml_excel_frame.grid()
-        self.sidebar_btn_1.configure(fg_color=("gray75", "gray25"))
-        self.sidebar_btn_2.configure(fg_color="transparent")
+    def build_xml_to_excel_frame(self):
+        self.xml_to_excel_frame = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.xml_to_excel_frame.grid(row=0, column=0, sticky="nsew")
+        self.xml_to_excel_frame.grid_columnconfigure(0, weight=1)
+        self.xml_to_excel_frame.grid_rowconfigure(0, weight=1)
+        self.xml_to_excel_frame.grid_rowconfigure(1, weight=1)
+
+        # Drag and Drop Area
+        self.xml2ex_drop_frame = ctk.CTkFrame(self.xml_to_excel_frame, fg_color=("gray75", "gray25"), corner_radius=15)
+        self.xml2ex_drop_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        self.xml2ex_drop_frame.grid_columnconfigure(0, weight=1)
+        self.xml2ex_drop_frame.grid_rowconfigure(0, weight=1)
+        self.xml2ex_drop_frame.grid_rowconfigure(1, weight=1)
+        self.xml2ex_drop_frame.grid_rowconfigure(2, weight=1)
         
-        sys.stdout = RedirectText(self.log_textbox)
+        self.xml2ex_drop_label = ctk.CTkLabel(self.xml2ex_drop_frame, text=TRANSLATIONS[self.lang]['drop_label'], font=ctk.CTkFont(size=16))
+        self.xml2ex_drop_label.grid(row=0, column=0, pady=(20, 10), sticky="s")
+        
+        self.xml2ex_btn_frame = ctk.CTkFrame(self.xml2ex_drop_frame, fg_color="transparent")
+        self.xml2ex_btn_frame.grid(row=1, column=0, pady=(10, 20), sticky="n")
+        
+        self.xml2ex_btn_files = ctk.CTkButton(self.xml2ex_btn_frame, text=TRANSLATIONS[self.lang]['btn_files'], command=self.select_files)
+        self.xml2ex_btn_files.grid(row=0, column=0, padx=10)
+        
+        self.xml2ex_btn_folder = ctk.CTkButton(self.xml2ex_btn_frame, text=TRANSLATIONS[self.lang]['btn_folder'], command=self.select_folder)
+        self.xml2ex_btn_folder.grid(row=0, column=1, padx=10)
+
+        # Log Area
+        self.xml2ex_log_textbox = ctk.CTkTextbox(self.xml_to_excel_frame, height=200)
+        self.xml2ex_log_textbox.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        self.xml2ex_log_textbox.configure(state="disabled")
+
+        # Configure Drop
+        self.xml2ex_drop_frame.drop_target_register(DND_FILES)
+        self.xml2ex_drop_frame.dnd_bind('<<Drop>>', self.drop_event)
+        
+    def build_analyse_frame(self):
+        self.analyse_frame = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.analyse_frame.grid(row=0, column=0, sticky="nsew")
+        self.analyse_frame.grid_columnconfigure(0, weight=1)
+        self.analyse_frame.grid_rowconfigure(0, weight=1)
+        self.analyse_frame.grid_rowconfigure(1, weight=1)
+
+        # Drag and Drop Area
+        self.analyse_drop_frame = ctk.CTkFrame(self.analyse_frame, fg_color=("gray75", "gray25"), corner_radius=15)
+        self.analyse_drop_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        self.analyse_drop_frame.grid_columnconfigure(0, weight=1)
+        self.analyse_drop_frame.grid_rowconfigure(0, weight=1)
+        self.analyse_drop_frame.grid_rowconfigure(1, weight=1)
+        self.analyse_drop_frame.grid_rowconfigure(2, weight=1)
+        
+        self.analyse_drop_label = ctk.CTkLabel(self.analyse_drop_frame, text=TRANSLATIONS[self.lang]['drop_label'], font=ctk.CTkFont(size=16))
+        self.analyse_drop_label.grid(row=0, column=0, pady=(20, 10), sticky="s")
+        
+        self.analyse_btn_frame = ctk.CTkFrame(self.analyse_drop_frame, fg_color="transparent")
+        self.analyse_btn_frame.grid(row=1, column=0, pady=(10, 20), sticky="n")
+        
+        self.analyse_btn_files = ctk.CTkButton(self.analyse_btn_frame, text=TRANSLATIONS[self.lang]['btn_files'], command=self.select_files)
+        self.analyse_btn_files.grid(row=0, column=0, padx=10)
+        
+        self.analyse_btn_folder = ctk.CTkButton(self.analyse_btn_frame, text=TRANSLATIONS[self.lang]['btn_folder'], command=self.select_folder)
+        self.analyse_btn_folder.grid(row=0, column=1, padx=10)
+        
+        self.analyse_btn_setup = ctk.CTkButton(self.analyse_btn_frame, text="Kategorien-Setup öffnen", command=self.open_analyse_setup, fg_color="#c85a17", hover_color="#a84b13")
+        self.analyse_btn_setup.grid(row=0, column=2, padx=10)
+
+        # Log Area
+        self.analyse_log_textbox = ctk.CTkTextbox(self.analyse_frame, height=200)
+        self.analyse_log_textbox.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        self.analyse_log_textbox.configure(state="disabled")
+
+        # Configure Drop
+        self.analyse_drop_frame.drop_target_register(DND_FILES)
+        self.analyse_drop_frame.dnd_bind('<<Drop>>', self.drop_event)
+
+    def open_analyse_setup(self):
+        if not self.current_client or self.current_client == "Kein Kunde":
+            print("\n❌ Bitte wähle zuerst einen Kunden in der Seitenleiste aus!")
+            return
+            
+        client_dir = os.path.join(self.base_kunden_dir, self.current_client)
+        nutzerdaten_dir = os.path.join(client_dir, "Nutzerdaten")
+        setup_path = os.path.join(nutzerdaten_dir, "Analyse_Setup.xlsx")
+        
+        if Analyse_Config:
+            Analyse_Config.ensure_setup_file(nutzerdaten_dir)
+            
+            print(f"Öffne {setup_path}...")
+            if os.name == 'nt' or sys.platform == 'win32':
+                os.startfile(setup_path)
+            elif sys.platform == 'darwin':
+                import subprocess
+                subprocess.run(['open', setup_path], check=True)
+            else:
+                import subprocess
+                subprocess.run(['xdg-open', setup_path], check=True)
+        else:
+            print("Analyse_Config.py konnte nicht importiert werden.")
+
+    def hide_all_frames(self):
+        self.xml_preview_frame.grid_remove()
+        self.xml_to_excel_frame.grid_remove()
+        self.buchung_erstellen_frame.grid_remove()
+        self.analyse_frame.grid_remove()
+        
+    def reset_sidebar_buttons(self):
+        self.sidebar_btn_1.configure(fg_color="transparent")
+        self.sidebar_btn_2.configure(fg_color="transparent")
+        self.sidebar_btn_3.configure(fg_color="transparent")
+        self.sidebar_btn_4.configure(fg_color="transparent")
+
+    def show_xml_preview(self):
+        self.active_tool = 'xml_preview'
+        self.hide_all_frames()
+        self.xml_preview_frame.grid()
+        self.reset_sidebar_buttons()
+        self.sidebar_btn_1.configure(fg_color=("gray75", "gray25"))
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+
+    def show_xml_to_excel(self):
+        self.active_tool = 'xml_to_excel'
+        self.hide_all_frames()
+        self.xml_to_excel_frame.grid()
+        self.reset_sidebar_buttons()
+        self.sidebar_btn_2.configure(fg_color=("gray75", "gray25"))
+        sys.stdout = RedirectText(self.print_queue, self.xml2ex_log_textbox)
+        sys.stderr = sys.stdout
+        print(TRANSLATIONS[self.lang]['welcome_msg'])
+
+    def show_buchung_erstellen(self):
+        self.active_tool = 'buchung_erstellen'
+        self.hide_all_frames()
+        self.buchung_erstellen_frame.grid()
+        self.reset_sidebar_buttons()
+        self.sidebar_btn_3.configure(fg_color=("gray75", "gray25"))
+        sys.stdout = RedirectText(self.print_queue, self.log_textbox)
+        sys.stderr = sys.stdout
+        print(TRANSLATIONS[self.lang]['welcome_msg'])
+
+    def show_analyse(self):
+        self.active_tool = 'analyse'
+        self.hide_all_frames()
+        self.analyse_frame.grid()
+        self.reset_sidebar_buttons()
+        self.sidebar_btn_4.configure(fg_color=("gray75", "gray25"))
+        sys.stdout = RedirectText(self.print_queue, self.analyse_log_textbox)
         sys.stderr = sys.stdout
         print(TRANSLATIONS[self.lang]['welcome_msg'])
 
     def change_language(self, choice):
         self.lang = choice
         t = TRANSLATIONS[self.lang]
-        self.sidebar_btn_1.configure(text=t['btn_xml_excel'])
-        self.sidebar_btn_2.configure(text=t['btn_xml_preview'])
-        self.sidebar_btn_3.configure(text=t['btn_pdf_gen'])
+        self.sidebar_btn_1.configure(text=t['btn_xml_preview'])
+        self.sidebar_btn_2.configure(text=t['btn_xml_to_excel'])
+        self.sidebar_btn_3.configure(text=t['btn_buchung_erstellen'])
+        self.sidebar_btn_4.configure(text=t['btn_analyse'])
         self.appearance_mode_switch.configure(text=t['switch_dark'])
         self.drop_label.configure(text=t['drop_label'])
         self.btn_files.configure(text=t['btn_files'])
@@ -222,18 +399,19 @@ class BuchhaltungApp(TkDnD):
         self.log_textbox.configure(state="normal")
         self.log_textbox.delete("1.0", "end")
         self.log_textbox.configure(state="disabled")
+        
+        self.xml2ex_drop_label.configure(text=t['drop_label'])
+        self.xml2ex_btn_files.configure(text=t['btn_files'])
+        self.xml2ex_btn_folder.configure(text=t['btn_folder'])
+        self.xml2ex_log_textbox.configure(state="normal")
+        self.xml2ex_log_textbox.delete("1.0", "end")
+        self.xml2ex_log_textbox.configure(state="disabled")
+        
         print(t['welcome_msg'])
         
         if hasattr(self, 'xml_preview_frame') and self.xml_preview_frame is not None and hasattr(self.xml_preview_frame, 'set_language'):
             self.xml_preview_frame.set_language(self.lang)
 
-    def show_xml_preview(self):
-        self.xml_excel_frame.grid_remove()
-        self.xml_preview_frame.grid()
-        self.sidebar_btn_2.configure(fg_color=("gray75", "gray25"))
-        self.sidebar_btn_1.configure(fg_color="transparent")
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
 
     def toggle_appearance_mode(self):
         if self.appearance_mode_switch.get() == 1:
@@ -283,21 +461,34 @@ class BuchhaltungApp(TkDnD):
             return
             
         print(f"\n--- Starte Verarbeitung für Kunde: {self.current_client} ({len(paths)} Elemente erkannt) ---")
-        if run_conversion:
-            client_dir = os.path.join(self.base_kunden_dir, self.current_client)
-            # Kopiere Dateien in den Rechnungen-Ordner (Optional: falls gewünscht)
-            # Hier reichen wir den Output-Ordner und Nutzerdaten-Ordner weiter an XMLEXCEL
-            output_dir = os.path.join(client_dir, "Buchhaltung")
-            nutzerdaten_dir = os.path.join(client_dir, "Nutzerdaten")
-            
-            thread = threading.Thread(target=self.run_task, args=(paths, output_dir, nutzerdaten_dir), daemon=True)
-            thread.start()
-        else:
-            print("Fehler: XMLEXCEL.py konnte nicht importiert werden.")
+        client_dir = os.path.join(self.base_kunden_dir, self.current_client)
+        output_dir = os.path.join(client_dir, "Buchhaltung")
+        nutzerdaten_dir = os.path.join(client_dir, "Nutzerdaten")
+        
+        if self.active_tool == 'buchung_erstellen':
+            if run_conversion:
+                thread = threading.Thread(target=self.run_task, args=(paths, output_dir, nutzerdaten_dir, run_conversion), daemon=True)
+                thread.start()
+            else:
+                print("Fehler: BuchungenErstellen.py konnte nicht importiert werden.")
+        elif self.active_tool == 'xml_to_excel':
+            if run_xml_to_excel:
+                thread = threading.Thread(target=self.run_task, args=(paths, output_dir, nutzerdaten_dir, run_xml_to_excel), daemon=True)
+                thread.start()
+            else:
+                print("Fehler: XMLzuExcel.py konnte nicht importiert werden.")
+        elif self.active_tool == 'analyse':
+            if run_analyse:
+                base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
+                folder = paths[0] if len(paths) > 0 else client_dir
+                thread = threading.Thread(target=self.run_task, args=([folder], output_dir, nutzerdaten_dir, lambda paths, output_dir, nutzerdaten_dir: run_analyse(paths[0], self.current_client, base_dir, nutzerdaten_dir)), daemon=True)
+                thread.start()
+            else:
+                print("Fehler: Analyse_Main.py konnte nicht importiert werden.")
 
-    def run_task(self, paths, output_dir, nutzerdaten_dir):
+    def run_task(self, paths, output_dir, nutzerdaten_dir, func):
         try:
-            run_conversion(paths, output_dir=output_dir, nutzerdaten_dir=nutzerdaten_dir)
+            func(paths, output_dir=output_dir, nutzerdaten_dir=nutzerdaten_dir)
             print("\n✅ Verarbeitung abgeschlossen.")
         except Exception as e:
             print(f"\n❌ Ein unerwarteter Fehler ist aufgetreten: {e}")
@@ -324,7 +515,7 @@ class BuchhaltungApp(TkDnD):
                     with open(last_client_file, "r") as f:
                         data = json.load(f)
                         saved_client = data.get("last_client")
-                except:
+                except Exception as e:
                     pass
             
             if saved_client and saved_client in self.all_clients:
@@ -424,9 +615,11 @@ class BuchhaltungApp(TkDnD):
         info_text.pack(pady=10)
         
         def save_client():
-            name = name_entry.get().strip()
-            if not name:
+            name_raw = name_entry.get().strip()
+            if not name_raw:
                 return
+                
+            name = re.sub(r'[<>:"/\\|?*]', '_', name_raw)
             
             client_dir = os.path.join(self.base_kunden_dir, name)
             if not os.path.exists(client_dir):

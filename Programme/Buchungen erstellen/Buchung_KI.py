@@ -3,6 +3,17 @@ import json
 import time
 
 def get_api_key(base_dir):
+    try:
+        from dotenv import load_dotenv
+        env_path = os.path.join(base_dir, "Systemdaten", "gemini_key.env")
+        load_dotenv(dotenv_path=env_path)
+    except Exception:
+        pass
+
+    key = os.environ.get("GEMINI_API_KEY")
+    if key:
+        return key
+
     key_path = os.path.join(base_dir, "Systemdaten", "gemini_api_key.txt")
     if os.path.exists(key_path):
         with open(key_path, "r", encoding="utf-8") as f:
@@ -53,9 +64,10 @@ def ask_gemini_batch(items_to_classify, api_key, nutzerdaten_dir=None):
 
     client = genai.Client(api_key=api_key)
     
-    # Chunking: Maximal 30 Artikel pro Request
-    chunk_size = 30
+    # Chunking: Maximal 100 Artikel pro Request
+    chunk_size = 100
     results = {}
+    current_model = 'gemini-3.5-flash'
     
     # Standard-Kontenplan Vorlage sicherstellen
     default_kontenplan = ensure_konten_template(nutzerdaten_dir)
@@ -92,18 +104,37 @@ def ask_gemini_batch(items_to_classify, api_key, nutzerdaten_dir=None):
         for local_idx, item in enumerate(chunk):
             prompt_text += f"ID: {local_idx} | Lieferant: {item['supplier']} | Beschreibung: {item['desc']}\n"
             
-        print(f"Sende Batch {i//chunk_size + 1} an Gemini ({len(chunk)} Artikel)...")
+        print(f"Sende Batch {i//chunk_size + 1} (Modell: {current_model}) an Gemini ({len(chunk)} Artikel)...")
         
         try:
-            response = client.models.generate_content(
-                model='gemini-3.5-flash',
-                contents=prompt_text,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                    temperature=0.1
-                )
+            config = types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                temperature=0.1
             )
+            
+            try:
+                response = client.models.generate_content(
+                    model=current_model,
+                    contents=prompt_text,
+                    config=config
+                )
+            except Exception as e:
+                error_msg = str(e)
+                if any(err in error_msg for err in ["429", "RESOURCE_EXHAUSTED", "Quota exceeded", "503", "UNAVAILABLE"]):
+                    if current_model == 'gemini-3.5-flash':
+                        print(f"\nLimit für {current_model} erreicht. Wechsle automatisch zu gemini-3.1-flash-lite...")
+                        current_model = 'gemini-3.1-flash-lite'
+                        print(f"Wiederhole Batch {i//chunk_size + 1} mit {current_model}...")
+                        response = client.models.generate_content(
+                            model=current_model,
+                            contents=prompt_text,
+                            config=config
+                        )
+                    else:
+                        raise e
+                else:
+                    raise e
             
             # Reparatur für abgeschnittene JSON-Antworten (typisch bei KI-Müdigkeit am Ende)
             try:

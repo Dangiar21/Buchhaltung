@@ -1,4 +1,4 @@
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 import os
 import base64
 from asn1crypto import cms
@@ -64,21 +64,21 @@ def decrypt_p7m(file_path):
     if xml_bytes is not None:
         return xml_bytes, signature_info
         
-    # Fallback
+    # Fallback mit Byte-Slicing
     try:
-        data_str = der_data.decode('utf-8', errors='ignore')
-        if '<' in data_str and '>' in data_str:
-            start = data_str.find('<?xml')
-            if start == -1:
-                start = data_str.find('<p:')
-            if start == -1:
-                start = data_str.find('<FatturaElettronica')
-                
+        start_tags = [b'<?xml', b'<p:FatturaElettronica', b'<FatturaElettronica', b'<ns2:FatturaElettronica', b'<ns3:FatturaElettronica']
+        start = -1
+        for tag in start_tags:
+            start = der_data.find(tag)
             if start != -1:
-                end = data_str.rfind('>') + 1
-                return data_str[start:end].encode('utf-8'), None
-    except:
-        pass
+                break
+                
+        if start != -1:
+            end = der_data.rfind(b'>') + 1
+            if end > start:
+                return der_data[start:end], None
+    except Exception as e:
+        print(f"Fallback fehlgeschlagen: {e}")
         
     return None, None
 
@@ -122,7 +122,7 @@ def parse_invoice(file_path):
                 try:
                     if len(val) >= 10 and val[4] == '-' and val[7] == '-':
                         val = f"{val[8:10]}.{val[5:7]}.{val[0:4]}"
-                except:
+                except Exception:
                     pass
             return val
 

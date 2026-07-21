@@ -2,14 +2,12 @@ import sys
 import os
 import traceback
 import re
+import io
 
 # Utils aus dem übergeordneten Ordner laden
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils import load_or_create_targa_list, append_new_targas_to_excel, ask_shorten_desc, get_text, safe_float, read_xml_or_p7m
 
-# 1. Wir versuchen die Module zu laden. Wenn das fehlschlägt, fangen wir den Fehler ab.
-import io
-import Buchung_Regeln
 try:
     import defusedxml.ElementTree as ET
     import pandas as pd
@@ -18,7 +16,7 @@ try:
     from openpyxl.styles import Font
 except Exception as e:
     print(f"Fehler beim Laden der Module: {e}")
-    print("Hast du 'pip install pandas openpyxl' im Terminal ausgeführt?")
+    print("Hast du 'pip install pandas openpyxl defusedxml' im Terminal ausgeführt?")
     input("\nDrücke Enter zum Beenden...")
     sys.exit(1)
 
@@ -26,53 +24,7 @@ def ask_shorten_desc_local_fallback():
     # Wird nun über utils.py importiert.
     pass
 
-def save_ai_assignments_to_excel(global_rules_path, new_assignments):
-    if not new_assignments:
-        return
-    
-    try:
-        from openpyxl import load_workbook
-        wb = load_workbook(global_rules_path)
-        
-        if "KI-Zuweisungen" not in wb.sheetnames:
-            print("Blatt 'KI-Zuweisungen' nicht gefunden. Speichern übersprungen.")
-            return
-            
-        ws = wb["KI-Zuweisungen"]
-        
-        start_row = ws.max_row + 1
-            
-        for assignment in new_assignments:
-            lief_id = assignment['Lieferant ID']
-            kunden_id = assignment['Kunden ID']
-            konto = int(assignment['Konto']) if str(assignment['Konto']).isdigit() else assignment['Konto']
-            
-            ws.cell(row=start_row, column=1, value=lief_id)
-            ws.cell(row=start_row, column=2, value=assignment['Lieferant Name'])
-            ws.cell(row=start_row, column=3, value=kunden_id)
-            ws.cell(row=start_row, column=4, value=assignment['Kunden Name'])
-            ws.cell(row=start_row, column=5, value=assignment['Beschreibung'])
-            ws.cell(row=start_row, column=6, value=konto)
-            ws.cell(row=start_row, column=7, value=assignment['Status'])
-            start_row += 1
-            
-        while True:
-            try:
-                wb.save(global_rules_path)
-                print(f"\n=> {len(new_assignments)} neue KI-Zuweisungen in {os.path.basename(global_rules_path)} gespeichert!")
-                break
-            except PermissionError:
-                print("\n" + "="*60)
-                print("FEHLER BEIM SPEICHERN DER KI-REGELN!")
-                print(f"Die Datei {os.path.basename(global_rules_path)} ist in Excel geöffnet.")
-                print("Bitte schließe die Datei in Excel und drücke ENTER, um es erneut zu versuchen.")
-                print("="*60 + "\n")
-                input("Drücke Enter, sobald die Datei geschlossen ist...")
-                
-    except Exception as e:
-        print(f"Fehler beim Anhängen der KI-Zuweisungen: {e}")
-
-def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True):
+def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_description=True):
     print(f"Lese: {xml_path}")
     rechnungspositionen = []
     
@@ -141,19 +93,16 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
         for linea in dati_linee:
             desc = get_text(linea, 'Descrizione', 'Keine Beschreibung')
             desc_short = desc.split(',', 1)[0].strip() if (',' in desc and shorten_description) else desc
-            desc_norm = re.sub(r'\s+', ' ', desc_short).strip().upper()
             qty_text = get_text(linea, 'Quantita', '1.0')
             price_text = get_text(linea, 'PrezzoUnitario', '0.0')
             total_text = get_text(linea, 'PrezzoTotale', '0.0')
             iva_text = get_text(linea, 'AliquotaIVA', '0.0')
             
-            # Sichere Konvertierung in Float
             qty = safe_float(qty_text, 1.0, faktor)
             price = safe_float(price_text, 0.0)
             total = safe_float(total_text, 0.0, faktor)
             iva = safe_float(iva_text, 0.0)
             
-            # Extrahiere Targa (Kennzeichen)
             targa_gefunden = ""
             fahrzeugtyp = ""
             altri_dati = linea.findall('.//AltriDatiGestionali')
@@ -163,13 +112,11 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
                     targa_gefunden = get_text(dato, 'RiferimentoTesto')
                     break
             if not targa_gefunden and desc:
-                # Fallback: Suche in der Beschreibung (z.B. "DIESEL, KZ/Baust.: FL 700 BA - Datum: ...")
                 match = re.search(r'KZ/Baust\.:\s*([A-Z0-9\s]+?)\s*(?:-|$)', desc, re.IGNORECASE)
                 if match:
                     targa_gefunden = match.group(1).strip()
             
             if targa_gefunden:
-                # Normalisiere Kennzeichen für die Suche
                 targa_norm = targa_gefunden.strip().upper().replace(' ', '')
                 fahrzeugtyp = targa_dict.get(targa_norm, "UNBEKANNT")
                 if targa_norm not in targa_dict and targa_norm not in neue_targas_set:
@@ -178,9 +125,6 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             abs_path = os.path.abspath(xml_path)
             dateiname = os.path.basename(xml_path)
             hyperlink_formel = f'=HYPERLINK("{abs_path}", "{dateiname}")'
-
-            # Konto ermitteln
-            conto, is_pending = Buchung_Regeln.assign_account(desc_norm, desc_short, lieferant, liefer_id, kunden_id, rules_dict)
             
             rechnungspositionen.append({
                 'Typ': dokumenttyp,
@@ -191,8 +135,6 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
                 'Kunde': kunde,
                 'Kunden ID': kunden_id,
                 'Beschreibung': desc_short,
-                'Conto': conto,
-                'is_pending': is_pending,
                 'CdC': targa_gefunden if targa_gefunden else "",
                 'Kennzeichen': targa_gefunden,
                 'Fahrzeugtyp': fahrzeugtyp,
@@ -221,31 +163,13 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
     try:
         if len(paths) > 0:
             for pfad in paths:
-                # Setze den Ausgabeordner auf das Verzeichnis des ersten Elements, falls keiner gegeben
                 if not ausgabe_ordner:
                     if os.path.isfile(pfad):
                         ausgabe_ordner = os.path.dirname(pfad)
                     else:
                         ausgabe_ordner = pfad
 
-            # Lade oder erstelle die Targa Liste VOR dem Parsen der XML Dateien
             targa_dict, targa_file = load_or_create_targa_list(nutzerdaten_dir)
-            
-            # --- Regel-System initialisieren ---
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            global_rules_path = os.path.join(base_dir, "Systemdaten", "Globale_KontenRegeln.xlsx")
-            Buchung_Regeln.ensure_rule_file(global_rules_path)
-            
-            client_rules_path = None
-            if nutzerdaten_dir:
-                client_rules_path = os.path.join(nutzerdaten_dir, "Kunden_KontenRegeln.xlsx")
-                Buchung_Regeln.ensure_rule_file(client_rules_path)
-            else:
-                client_rules_path = os.path.join(base_dir, "Kunden", "Unbekannt", "Nutzerdaten", "Kunden_KontenRegeln.xlsx")
-                Buchung_Regeln.ensure_rule_file(client_rules_path)
-                
-            rules_dict = Buchung_Regeln.load_rules(global_rules_path, client_rules_path)
-            
             neue_targas_set = set()
             fehler_log = []
             
@@ -253,88 +177,25 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
 
             for pfad in paths:
                 if os.path.isfile(pfad) and (pfad.lower().endswith('.xml') or pfad.lower().endswith('.p7m')):
-                    alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description))
+                    alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, shorten_description))
                 elif os.path.isdir(pfad):
                     print(f"\nDurchsuche Ordner (inkl. Unterordner): {pfad}")
                     for root_dir, _, files in os.walk(pfad):
                         for filename in files:
                             if filename.lower().endswith('.xml') or filename.lower().endswith('.p7m'):
-                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description))
+                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, shorten_description))
                 else:
                     print(f"Überspringe: {pfad} (Keine XML/P7M oder Ordner)")
             
             if alle_positionen:
-                # --- KI Fallback ---
-                import Buchung_KI
-                api_key = Buchung_KI.get_api_key(base_dir)
-                
-                ai_indices = []
-                unique_unknowns = {}
-                for i, pos in enumerate(alle_positionen):
-                    if pos.pop('is_pending', False):
-                        ai_indices.append(i + 2)
-                        
-                    if pos.get('Conto') == '???':
-                        desc_norm = re.sub(r'\s+', ' ', pos.get('Beschreibung', '')).strip().upper()
-                        key = (pos.get('Liefer ID', ''), desc_norm, pos.get('Kunden ID', ''))
-                        if key not in unique_unknowns:
-                            unique_unknowns[key] = {
-                                'item': {
-                                    'id': str(len(unique_unknowns)),
-                                    'desc': pos.get('Beschreibung', ''),
-                                    'supplier': pos.get('Lieferant', ''), # Wir senden weiterhin den Namen für besseren KI-Kontext
-                                    'kunde': pos.get('Kunde', '')
-                                },
-                                'indices': []
-                            }
-                        unique_unknowns[key]['indices'].append(i)
-                        
-                if unique_unknowns and api_key:
-                    items_to_send = [u['item'] for u in unique_unknowns.values()]
-                    total_dups = sum(len(u['indices']) for u in unique_unknowns.values())
-                    print(f"\nSende {len(items_to_send)} eindeutige unbekannte Artikel an die KI (Dedupliziert von {total_dups} Positionen)...")
-                    ai_results = Buchung_KI.ask_gemini_batch(items_to_send, api_key, nutzerdaten_dir)
-                    
-                    new_ai_assignments = []
-                    
-                    for key, data in unique_unknowns.items():
-                        unique_id = data['item']['id']
-                        if unique_id in ai_results:
-                            konto = ai_results[unique_id]
-                            
-                            new_ai_assignments.append({
-                                'Lieferant ID': key[0],
-                                'Lieferant Name': data['item']['supplier'],
-                                'Kunden ID': key[2],
-                                'Kunden Name': data['item']['kunde'],
-                                'Beschreibung': key[1],
-                                'Konto': konto,
-                                'Status': 'AUSSTEHEND'
-                            })
-                            
-                            for original_i in data['indices']:
-                                alle_positionen[original_i]['Conto'] = konto
-                                ai_indices.append(original_i + 2) # +2 weil Excel bei 1 startet und Zeile 1 der Header ist
-                                
-                    if new_ai_assignments:
-                        save_ai_assignments_to_excel(global_rules_path, new_ai_assignments)
-
-                # Generelle Konvertierung aller als String gespeicherten Nummern zu Integer
-                for pos in alle_positionen:
-                    c = pos.get('Conto')
-                    if isinstance(c, str) and c.isdigit():
-                        pos['Conto'] = int(c)
-
                 print(f"\nErstelle Excel-Datei mit {len(alle_positionen)} Positionen...")
                 df = pd.DataFrame(alle_positionen)
                 
-                # Wenn kein einziges Kennzeichen gefunden wurde, die beiden Spalten entfernen
                 has_targa = any(pos.get('Kennzeichen', '') for pos in alle_positionen)
                 if not has_targa:
                     if 'Kennzeichen' in df.columns:
                         df = df.drop(columns=['Kennzeichen', 'Fahrzeugtyp'])
                 
-                # Excel Datei generieren
                 if output_dir:
                     sammlung_ordner = output_dir
                 else:
@@ -344,19 +205,17 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 if not os.path.exists(sammlung_ordner):
                     os.makedirs(sammlung_ordner)
                     
-                excel_path = os.path.join(sammlung_ordner, 'Gesammelte_Buchungen.xlsx')
+                excel_path = os.path.join(sammlung_ordner, 'Gesammelte_XML_Daten.xlsx')
                 
-                # Falls the Datei schon existiert, einen eindeutigen Namen finden
                 counter = 1
                 while os.path.exists(excel_path):
-                    excel_path = os.path.join(sammlung_ordner, f'Gesammelte_Buchungen_{counter}.xlsx')
+                    excel_path = os.path.join(sammlung_ordner, f'Gesammelte_XML_Daten_{counter}.xlsx')
                     counter += 1
 
                 writer = pd.ExcelWriter(excel_path, engine='openpyxl')
-                df.to_excel(writer, index=False, sheet_name='Buchungen')
+                df.to_excel(writer, index=False, sheet_name='XML_Daten')
                 
-                worksheet = writer.sheets['Buchungen']
-                # Automatische Spaltenbreite (Performance-optimiert: nur erste 50 Zeilen prüfen)
+                worksheet = writer.sheets['XML_Daten']
                 for column_cells in worksheet.columns:
                     max_length = 0
                     column_letter = column_cells[0].column_letter
@@ -364,7 +223,6 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         try:
                             if cell.value:
                                 val_str = str(cell.value)
-                                # Bei Hyperlink-Formeln den angezeigten Text für die Länge verwenden
                                 if val_str.startswith('=HYPERLINK'):
                                     parts = val_str.split('", "')
                                     if len(parts) > 1:
@@ -376,14 +234,12 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         except:
                             pass
                     
-                    # Breite = maximale Textlänge + Puffer (ca. 1cm)
                     adjusted_width = max_length + 6 
-                    if adjusted_width > 70:  # Spalten nicht unendlich groß machen
+                    if adjusted_width > 70:
                         adjusted_width = 70
                         
                     worksheet.column_dimensions[column_letter].width = adjusted_width
                 
-                # Dynamische Spaltenindizes finden (1-basiert für openpyxl)
                 col_indices = {cell.value: idx for idx, cell in enumerate(worksheet[1], start=1)}
                 
                 einzelpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Einzelpreis')), None)
@@ -393,10 +249,8 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
 
                 euro_format = '#,##0.00 €'
                 percent_format = '0.00%'
-                from openpyxl.styles import Font, PatternFill
+                from openpyxl.styles import Font
                 link_font = Font(color="0563C1", underline="single")
-                red_font = Font(color="FF0000", bold=True)
-                conto_col = col_indices.get('Conto')
                 
                 for row in range(2, worksheet.max_row + 1):
                     if einzelpreis_col:
@@ -407,13 +261,10 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         worksheet.cell(row=row, column=mwst_col).number_format = percent_format
                     if datei_col:
                         worksheet.cell(row=row, column=datei_col).font = link_font
-                    
-                    if conto_col and row in ai_indices:
-                        worksheet.cell(row=row, column=conto_col).font = red_font
                 
                 writer.close()
                 
-                print(f"Erfolgreich gespeichert unter: {excel_path}")
+                print(f"\n✅ Erfolgreich gespeichert unter: {excel_path}")
                 
                 append_new_targas_to_excel(targa_file, neue_targas_set)
                 
@@ -442,7 +293,6 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
         print("\nEin unerwarteter Fehler ist aufgetreten:")
         print(traceback.format_exc())
         
-        # Dieser Befehl hält das Fenster ganz am Schluss offen, egal was passiert ist
         if paths is None or paths == sys.argv[1:]:
             if sys.stdout.isatty():
                 input("\nDrücke Enter zum Beenden...")
