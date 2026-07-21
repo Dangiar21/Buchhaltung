@@ -8,14 +8,14 @@ import re
 
 # Modulpfade hinzufügen, damit die Unterordner erkannt werden
 script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
-sys.path.append(os.path.join(script_dir, 'Programme', 'XML zu Excel'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'Buchungen erstellen'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'XML Preview'))
 
 # Versuche Module zu importieren
 try:
-    from XMLEXCEL import run_conversion
+    from BuchungenErstellen import run_conversion
 except ImportError as e:
-    print("Fehler beim Import von XMLEXCEL:", e)
+    print("Fehler beim Import von BuchungenErstellen:", e)
     run_conversion = None
 
 try:
@@ -23,6 +23,12 @@ try:
 except ImportError as e:
     print("Fehler beim Import von XMLPreviewGUI:", e)
     XMLPreviewFrame = None
+
+try:
+    from Buchung_KI import ensure_konten_template
+except ImportError as e:
+    print("Fehler beim Import von ensure_konten_template:", e)
+    ensure_konten_template = None
 
 # CustomTkinter Theme
 ctk.set_appearance_mode("Light")
@@ -50,7 +56,7 @@ class RedirectText(io.StringIO):
 
 TRANSLATIONS = {
     'DE': {
-        'btn_xml_excel': 'XML zu Excel',
+        'btn_xml_excel': 'Buchungen erstellen',
         'btn_xml_preview': 'XML Preview',
         'btn_pdf_gen': 'PDF Generator',
         'drop_label': 'Ordner oder XML/P7M Dateien hier ablegen\n(Drag & Drop)',
@@ -60,7 +66,7 @@ TRANSLATIONS = {
         'switch_dark': 'Dark Mode'
     },
     'IT': {
-        'btn_xml_excel': 'XML in Excel',
+        'btn_xml_excel': 'Crea Registrazioni',
         'btn_xml_preview': 'Anteprima XML',
         'btn_pdf_gen': 'Generatore PDF',
         'drop_label': 'Trascina qui file XML/P7M o cartelle\n(Drag & Drop)',
@@ -92,21 +98,39 @@ class BuchhaltungApp(TkDnD):
         self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="Buchhaltung", font=ctk.CTkFont(size=20, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
 
+        # --- Client Selection ---
+        self.client_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        self.client_frame.grid(row=1, column=0, padx=20, pady=(0, 10), sticky="nsew")
+        
+        self.search_client_var = ctk.StringVar()
+        self.search_client_entry = ctk.CTkEntry(self.client_frame, placeholder_text="Kunde suchen...", textvariable=self.search_client_var)
+        self.search_client_entry.pack(fill="x", pady=(0, 5))
+        self.search_client_entry.bind("<KeyRelease>", self.filter_clients)
+        
+        self.client_list_frame = ctk.CTkScrollableFrame(self.client_frame, height=150, fg_color=("gray85", "gray20"))
+        self.client_list_frame.pack(fill="both", expand=True, pady=(0, 5))
+        
+        self.btn_new_client = ctk.CTkButton(self.client_frame, text="+ Neuer Kunde", command=self.open_new_client_dialog, fg_color="#2b9e4a", hover_color="#217a39")
+        self.btn_new_client.pack(fill="x")
+
         self.sidebar_btn_1 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_excel'], command=self.show_xml_excel, text_color=("black", "white"))
-        self.sidebar_btn_1.grid(row=1, column=0, padx=20, pady=10)
+        self.sidebar_btn_1.grid(row=2, column=0, padx=20, pady=10)
 
         self.sidebar_btn_2 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_preview'], command=self.show_xml_preview, text_color=("black", "white"))
-        self.sidebar_btn_2.grid(row=2, column=0, padx=20, pady=10)
+        self.sidebar_btn_2.grid(row=3, column=0, padx=20, pady=10)
 
         self.sidebar_btn_3 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_pdf_gen'], state="disabled", text_color=("black", "white"))
-        self.sidebar_btn_3.grid(row=3, column=0, padx=20, pady=10)
+        self.sidebar_btn_3.grid(row=4, column=0, padx=20, pady=10)
+        
+        # Leerraum auffüllen
+        self.sidebar_frame.grid_rowconfigure(5, weight=1)
 
         self.appearance_mode_switch = ctk.CTkSwitch(self.sidebar_frame, text=TRANSLATIONS[self.lang]['switch_dark'], command=self.toggle_appearance_mode)
-        self.appearance_mode_switch.grid(row=4, column=0, padx=20, pady=(20, 10), sticky="s")
+        self.appearance_mode_switch.grid(row=6, column=0, padx=20, pady=(20, 10), sticky="s")
         
         self.lang_switch = ctk.CTkSegmentedButton(self.sidebar_frame, values=["DE", "IT"], command=self.change_language)
         self.lang_switch.set("DE")
-        self.lang_switch.grid(row=5, column=0, padx=20, pady=(10, 20), sticky="s")
+        self.lang_switch.grid(row=7, column=0, padx=20, pady=(10, 20), sticky="s")
 
         # --- Container (Right Side) ---
         self.container = ctk.CTkFrame(self, fg_color="transparent")
@@ -117,6 +141,15 @@ class BuchhaltungApp(TkDnD):
         # --- Frames ---
         self.build_xml_excel_frame()
         self.build_xml_preview_frame()
+        
+        # Load Clients
+        self.base_kunden_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Kunden")
+        if not os.path.exists(self.base_kunden_dir):
+            os.makedirs(self.base_kunden_dir)
+            
+        self.current_client = None
+        self.all_clients = []
+        self.refresh_clients()
         
         # Startansicht
         self.show_xml_excel()
@@ -224,31 +257,205 @@ class BuchhaltungApp(TkDnD):
         if paths:
             self.process_paths(paths)
 
+    def get_initial_dir(self):
+        if self.current_client and self.current_client != "Kein Kunde":
+            rechnungen_dir = os.path.join(self.base_kunden_dir, self.current_client, "Rechnungen")
+            if os.path.exists(rechnungen_dir):
+                return rechnungen_dir
+        return os.getcwd()
+
     def select_files(self):
         filetypes = (('Rechnungen (XML/P7M)', '*.xml *.p7m'), ('Alle Dateien', '*.*'))
-        filenames = ctk.filedialog.askopenfilenames(title='Wähle XML/P7M Dateien aus', filetypes=filetypes)
+        initial_dir = self.get_initial_dir()
+        filenames = ctk.filedialog.askopenfilenames(title='Wähle XML/P7M Dateien aus', filetypes=filetypes, initialdir=initial_dir)
         if filenames:
             self.process_paths(list(filenames))
             
     def select_folder(self):
-        folder_path = ctk.filedialog.askdirectory(title='Wähle einen Ordner mit Rechnungen aus')
+        initial_dir = self.get_initial_dir()
+        folder_path = ctk.filedialog.askdirectory(title='Wähle einen Ordner mit Rechnungen aus', initialdir=initial_dir)
         if folder_path:
             self.process_paths([folder_path])
 
     def process_paths(self, paths):
-        print(f"\n--- Starte Verarbeitung ({len(paths)} Elemente erkannt) ---")
+        if not self.current_client or self.current_client == "Kein Kunde":
+            print("\n❌ Bitte wähle zuerst einen Kunden in der Seitenleiste aus!")
+            return
+            
+        print(f"\n--- Starte Verarbeitung für Kunde: {self.current_client} ({len(paths)} Elemente erkannt) ---")
         if run_conversion:
-            thread = threading.Thread(target=self.run_task, args=(paths,), daemon=True)
+            client_dir = os.path.join(self.base_kunden_dir, self.current_client)
+            # Kopiere Dateien in den Rechnungen-Ordner (Optional: falls gewünscht)
+            # Hier reichen wir den Output-Ordner und Nutzerdaten-Ordner weiter an XMLEXCEL
+            output_dir = os.path.join(client_dir, "Buchhaltung")
+            nutzerdaten_dir = os.path.join(client_dir, "Nutzerdaten")
+            
+            thread = threading.Thread(target=self.run_task, args=(paths, output_dir, nutzerdaten_dir), daemon=True)
             thread.start()
         else:
             print("Fehler: XMLEXCEL.py konnte nicht importiert werden.")
 
-    def run_task(self, paths):
+    def run_task(self, paths, output_dir, nutzerdaten_dir):
         try:
-            run_conversion(paths)
+            run_conversion(paths, output_dir=output_dir, nutzerdaten_dir=nutzerdaten_dir)
             print("\n✅ Verarbeitung abgeschlossen.")
         except Exception as e:
             print(f"\n❌ Ein unerwarteter Fehler ist aufgetreten: {e}")
+
+    def refresh_clients(self):
+        self.all_clients = []
+        if os.path.exists(self.base_kunden_dir):
+            for d in os.listdir(self.base_kunden_dir):
+                if os.path.isdir(os.path.join(self.base_kunden_dir, d)):
+                    self.all_clients.append(d)
+        
+        self.all_clients.sort()
+        
+        if not self.all_clients:
+            self.current_client = None
+            self.search_client_var.set("Kein Kunde")
+        else:
+            # Versuche den letzten Kunden zu laden
+            last_client_file = os.path.join(self.base_kunden_dir, "last_client.json")
+            saved_client = None
+            if os.path.exists(last_client_file):
+                try:
+                    import json
+                    with open(last_client_file, "r") as f:
+                        data = json.load(f)
+                        saved_client = data.get("last_client")
+                except:
+                    pass
+            
+            if saved_client and saved_client in self.all_clients:
+                self.current_client = saved_client
+            elif self.current_client not in self.all_clients:
+                self.current_client = self.all_clients[0]
+                
+            self.search_client_var.set(self.current_client)
+            # Preview Frame aktualisieren
+            self.on_client_changed(self.current_client)
+            
+        self.render_client_list()
+        
+    def render_client_list(self, filtered_clients=None):
+        for w in self.client_list_frame.winfo_children():
+            w.destroy()
+            
+        clients_to_show = filtered_clients if filtered_clients is not None else self.all_clients
+        
+        if not clients_to_show:
+            ctk.CTkLabel(self.client_list_frame, text="Kein Kunde gefunden").pack(pady=10)
+            return
+            
+        for c in clients_to_show:
+            is_active = (c == self.current_client)
+            color = ("#3a7ebf", "#1f538d") if is_active else "transparent"
+            text_color = "white" if is_active else ("black", "white")
+            
+            btn = ctk.CTkButton(
+                self.client_list_frame, 
+                text=c, 
+                fg_color=color, 
+                text_color=text_color, 
+                anchor="w",
+                command=lambda name=c: self.select_client_from_list(name)
+            )
+            btn.pack(fill="x", pady=1)
+
+    def filter_clients(self, event=None):
+        # Ignore navigation keys
+        if event and event.keysym in ('Up', 'Down', 'Return', 'Escape', 'Tab'):
+            return
+            
+        query = self.search_client_var.get().lower()
+        if not query:
+            filtered = self.all_clients
+        else:
+            filtered = [c for c in self.all_clients if query in c.lower()]
+            
+        self.render_client_list(filtered_clients=filtered)
+
+    def select_client_from_list(self, choice):
+        self.search_client_var.set(choice)
+        self.on_client_changed(choice)
+        self.render_client_list() # Update active color
+
+    def on_client_changed(self, choice):
+        if choice and choice != "Kein Kunde" and choice != "Kein Kunde gefunden":
+            self.current_client = choice
+            print(f"\nKunde gewechselt zu: {self.current_client}")
+            
+            # Letzten Kunden speichern
+            try:
+                import json
+                last_client_file = os.path.join(self.base_kunden_dir, "last_client.json")
+                with open(last_client_file, "w") as f:
+                    json.dump({"last_client": self.current_client}, f)
+            except Exception as e:
+                print(f"Fehler beim Speichern des letzten Kunden: {e}")
+            
+            # Optional: Dem Preview-Fenster mitteilen, dass der Kunde gewechselt wurde
+            # falls wir das Preview auf den Kundenordner filtern möchten
+            client_dir = os.path.join(self.base_kunden_dir, self.current_client)
+            if hasattr(self, 'xml_preview_frame') and self.xml_preview_frame:
+                rechnungen_dir = os.path.join(client_dir, "Rechnungen")
+                if os.path.exists(rechnungen_dir) and hasattr(self.xml_preview_frame, 'load_directory'):
+                    # Load directory async to not block GUI
+                    self.xml_preview_frame.current_folder = rechnungen_dir
+                    self.xml_preview_frame.after(100, lambda: self.xml_preview_frame.load_directory(rechnungen_dir))
+        else:
+            self.current_client = None
+
+    def open_new_client_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Neuer Kunde")
+        dialog.geometry("400x350")
+        dialog.attributes('-topmost', 'true')
+        
+        lbl = ctk.CTkLabel(dialog, text="Neuen Kunden anlegen", font=ctk.CTkFont(size=16, weight="bold"))
+        lbl.pack(pady=15)
+        
+        name_entry = ctk.CTkEntry(dialog, placeholder_text="Kundenname / Ordnername", width=300)
+        name_entry.pack(pady=10)
+        
+        info_text = ctk.CTkTextbox(dialog, width=300, height=150)
+        info_text.insert("1.0", "Weitere Infos (USt-IdNr., Steuernummer, etc.)")
+        info_text.pack(pady=10)
+        
+        def save_client():
+            name = name_entry.get().strip()
+            if not name:
+                return
+            
+            client_dir = os.path.join(self.base_kunden_dir, name)
+            if not os.path.exists(client_dir):
+                os.makedirs(client_dir)
+                os.makedirs(os.path.join(client_dir, "Rechnungen"))
+                os.makedirs(os.path.join(client_dir, "Buchhaltung"))
+                os.makedirs(os.path.join(client_dir, "Analyse"))
+                info_nutzerdaten_dir = os.path.join(client_dir, "Nutzerdaten")
+                os.makedirs(info_nutzerdaten_dir, exist_ok=True)
+                
+                if ensure_konten_template:
+                    ensure_konten_template(info_nutzerdaten_dir)
+                
+                info = info_text.get("1.0", "end").strip()
+                if info and info != "Weitere Infos (USt-IdNr., Steuernummer, etc.)":
+                    import json
+                    info_path = os.path.join(info_nutzerdaten_dir, "info.json")
+                    with open(info_path, "w", encoding="utf-8") as f:
+                        json.dump({"Kundenname": name, "Zusatzinfos": info}, f, ensure_ascii=False, indent=4)
+                
+                print(f"\n=> Kunde '{name}' erfolgreich angelegt!")
+                self.refresh_clients()
+                self.select_client_from_list(name)
+                dialog.destroy()
+            else:
+                print(f"Kunde {name} existiert bereits!")
+                
+        btn_save = ctk.CTkButton(dialog, text="Speichern", command=save_client)
+        btn_save.pack(pady=10)
 
 if __name__ == "__main__":
     app = BuchhaltungApp()

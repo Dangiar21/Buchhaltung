@@ -264,17 +264,7 @@ class XMLPreviewFrame(ctk.CTkFrame):
         self.cessionari_counts = {}
         self.current_folder = ""
         
-        config_path = os.path.join(os.path.dirname(__file__), "preview_config.json")
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                    last_folder = config.get("last_folder", "")
-                    if last_folder and os.path.isdir(last_folder):
-                        self.current_folder = last_folder
-                        self.after(100, lambda: self.load_directory(self.current_folder))
-            except Exception:
-                pass
+        # Config logic removed to avoid conflict with main GUI.
         
         # Populate initial empty state for top bar
         self.render_top_bar()
@@ -350,13 +340,7 @@ class XMLPreviewFrame(ctk.CTkFrame):
         self.render_cessionari()
         self.apply_filters()
         
-        # Save to config
-        config_path = os.path.join(os.path.dirname(__file__), "preview_config.json")
-        try:
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump({"last_folder": folder}, f)
-        except Exception:
-            pass
+        # Save to config removed
         
     def extract_filter_data(self):
         years = set()

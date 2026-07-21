@@ -5,6 +5,7 @@ import re
 
 # 1. Wir versuchen die Module zu laden. Wenn das fehlschlägt, fangen wir den Fehler ab.
 import io
+import Buchung_Regeln
 try:
     import xml.etree.ElementTree as ET
     import pandas as pd
@@ -17,9 +18,10 @@ except ImportError as e:
     input("\nDrücke Enter zum Beenden...")
     sys.exit(1)
 
-def load_or_create_targa_list():
-    script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
-    verkn_ordner = os.path.join(script_dir, 'Excel_Verknüpfungen')
+def load_or_create_targa_list(nutzerdaten_dir=None):
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    verkn_ordner = os.path.join(base_dir, "Systemdaten")
+        
     if not os.path.exists(verkn_ordner):
         os.makedirs(verkn_ordner)
         
@@ -104,7 +106,7 @@ def get_text(node, xpath, default=""):
     child = node.find(xpath)
     return child.text if child is not None and child.text else default
 
-def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log):
+def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict):
     print(f"Lese: {xml_path}")
     rechnungspositionen = []
     
@@ -239,6 +241,9 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log):
             dateiname = os.path.basename(xml_path)
             hyperlink_formel = f'=HYPERLINK("{abs_path}", "{dateiname}")'
 
+            # Konto ermitteln
+            conto = Buchung_Regeln.assign_account(desc_short, lieferant, liefer_id, rules_dict)
+            
             rechnungspositionen.append({
                 'Typ': dokumenttyp,
                 'Rechnungsnummer': rechnungs_nummer,
@@ -248,6 +253,8 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log):
                 'Kunde': kunde,
                 'Kunden ID': kunden_id,
                 'Beschreibung': desc_short,
+                'Conto': conto,
+                'CdC': targa_gefunden if targa_gefunden else "",
                 'Kennzeichen': targa_gefunden,
                 'Fahrzeugtyp': fahrzeugtyp,
                 'Menge': qty,
@@ -265,17 +272,17 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log):
         
     return rechnungspositionen
 
-def run_conversion(paths=None):
+def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
     if paths is None:
         paths = sys.argv[1:]
         
     alle_positionen = []
-    ausgabe_ordner = ""
+    ausgabe_ordner = output_dir
 
     try:
         if len(paths) > 0:
             for pfad in paths:
-                # Setze den Ausgabeordner auf das Verzeichnis des ersten Elements
+                # Setze den Ausgabeordner auf das Verzeichnis des ersten Elements, falls keiner gegeben
                 if not ausgabe_ordner:
                     if os.path.isfile(pfad):
                         ausgabe_ordner = os.path.dirname(pfad)
@@ -283,23 +290,79 @@ def run_conversion(paths=None):
                         ausgabe_ordner = pfad
 
             # Lade oder erstelle die Targa Liste VOR dem Parsen der XML Dateien
-            targa_dict, targa_file = load_or_create_targa_list()
+            targa_dict, targa_file = load_or_create_targa_list(nutzerdaten_dir)
+            
+            # --- Regel-System initialisieren ---
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            global_rules_path = os.path.join(base_dir, "Systemdaten", "Globale_KontenRegeln.xlsx")
+            Buchung_Regeln.ensure_rule_file(global_rules_path)
+            
+            client_rules_path = None
+            if nutzerdaten_dir:
+                client_rules_path = os.path.join(nutzerdaten_dir, "Kunden_KontenRegeln.xlsx")
+                Buchung_Regeln.ensure_rule_file(client_rules_path)
+            else:
+                client_rules_path = os.path.join(base_dir, "Kunden", "Unbekannt", "Nutzerdaten", "Kunden_KontenRegeln.xlsx")
+                Buchung_Regeln.ensure_rule_file(client_rules_path)
+                
+            rules_dict = Buchung_Regeln.load_rules(global_rules_path, client_rules_path)
+            
             neue_targas_set = set()
             fehler_log = []
 
             for pfad in paths:
                 if os.path.isfile(pfad) and (pfad.lower().endswith('.xml') or pfad.lower().endswith('.p7m')):
-                    alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log))
+                    alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict))
                 elif os.path.isdir(pfad):
                     print(f"\nDurchsuche Ordner (inkl. Unterordner): {pfad}")
                     for root_dir, _, files in os.walk(pfad):
                         for filename in files:
                             if filename.lower().endswith('.xml') or filename.lower().endswith('.p7m'):
-                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log))
+                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, rules_dict))
                 else:
                     print(f"Überspringe: {pfad} (Keine XML/P7M oder Ordner)")
             
             if alle_positionen:
+                # --- KI Fallback ---
+                import Buchung_KI
+                api_key = Buchung_KI.get_api_key(base_dir)
+                
+                unique_unknowns = {}
+                for i, pos in enumerate(alle_positionen):
+                    if pos.get('Conto') == '???':
+                        key = (pos.get('Liefer ID', ''), pos.get('Beschreibung', ''), pos.get('Kunden ID', ''))
+                        if key not in unique_unknowns:
+                            unique_unknowns[key] = {
+                                'item': {
+                                    'id': str(len(unique_unknowns)),
+                                    'desc': pos.get('Beschreibung', ''),
+                                    'supplier': pos.get('Lieferant', '') # Wir senden weiterhin den Namen für besseren KI-Kontext
+                                },
+                                'indices': []
+                            }
+                        unique_unknowns[key]['indices'].append(i)
+                        
+                ai_indices = []
+                if unique_unknowns and api_key:
+                    items_to_send = [u['item'] for u in unique_unknowns.values()]
+                    total_dups = sum(len(u['indices']) for u in unique_unknowns.values())
+                    print(f"\nSende {len(items_to_send)} eindeutige unbekannte Artikel an die KI (Dedupliziert von {total_dups} Positionen)...")
+                    ai_results = Buchung_KI.ask_gemini_batch(items_to_send, api_key, nutzerdaten_dir)
+                    
+                    for key, data in unique_unknowns.items():
+                        unique_id = data['item']['id']
+                        if unique_id in ai_results:
+                            konto = ai_results[unique_id]
+                            for original_i in data['indices']:
+                                alle_positionen[original_i]['Conto'] = konto
+                                ai_indices.append(original_i + 2) # +2 weil Excel bei 1 startet und Zeile 1 der Header ist
+
+                # Generelle Konvertierung aller als String gespeicherten Nummern zu Integer
+                for pos in alle_positionen:
+                    c = pos.get('Conto')
+                    if isinstance(c, str) and c.isdigit():
+                        pos['Conto'] = int(c)
+
                 print(f"\nErstelle Excel-Datei mit {len(alle_positionen)} Positionen...")
                 df = pd.DataFrame(alle_positionen)
                 
@@ -310,23 +373,27 @@ def run_conversion(paths=None):
                         df = df.drop(columns=['Kennzeichen', 'Fahrzeugtyp'])
                 
                 # Excel Datei generieren
-                script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
-                sammlung_ordner = os.path.join(script_dir, 'Excel_Sammlung')
+                if output_dir:
+                    sammlung_ordner = output_dir
+                else:
+                    script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
+                    sammlung_ordner = os.path.join(script_dir, 'Excel_Sammlung')
+                    
                 if not os.path.exists(sammlung_ordner):
                     os.makedirs(sammlung_ordner)
                     
-                excel_path = os.path.join(sammlung_ordner, 'Gesammelte_Rechnungen.xlsx')
+                excel_path = os.path.join(sammlung_ordner, 'Gesammelte_Buchungen.xlsx')
                 
-                # Falls die Datei schon existiert, einen eindeutigen Namen finden
+                # Falls the Datei schon existiert, einen eindeutigen Namen finden
                 counter = 1
                 while os.path.exists(excel_path):
-                    excel_path = os.path.join(sammlung_ordner, f'Gesammelte_Rechnungen_{counter}.xlsx')
+                    excel_path = os.path.join(sammlung_ordner, f'Gesammelte_Buchungen_{counter}.xlsx')
                     counter += 1
 
                 writer = pd.ExcelWriter(excel_path, engine='openpyxl')
-                df.to_excel(writer, index=False, sheet_name='Rechnungen')
+                df.to_excel(writer, index=False, sheet_name='Buchungen')
                 
-                worksheet = writer.sheets['Rechnungen']
+                worksheet = writer.sheets['Buchungen']
                 # Automatische Spaltenbreite (Perfekte Breite + Puffer)
                 for column_cells in worksheet.columns:
                     max_length = 0
@@ -364,7 +431,10 @@ def run_conversion(paths=None):
 
                 euro_format = '#,##0.00 €'
                 percent_format = '0.00%'
+                from openpyxl.styles import Font, PatternFill
                 link_font = Font(color="0563C1", underline="single")
+                red_font = Font(color="FF0000", bold=True)
+                conto_col = col_indices.get('Conto')
                 
                 for row in range(2, worksheet.max_row + 1):
                     if einzelpreis_col:
@@ -375,6 +445,9 @@ def run_conversion(paths=None):
                         worksheet.cell(row=row, column=mwst_col).number_format = percent_format
                     if datei_col:
                         worksheet.cell(row=row, column=datei_col).font = link_font
+                    
+                    if conto_col and row in ai_indices:
+                        worksheet.cell(row=row, column=conto_col).font = red_font
                 
                 writer.close()
                 

@@ -1,0 +1,16 @@
+# Ignoriere Kunden-Daten (Rechnungen, Buchhaltung, Personenbezogene Daten)
+Kunden/
+
+# Ignoriere sensible API Keys
+Systemdaten/gemini_api_key.txt
+
+# Ignoriere Python Caches
+**/__pycache__/
+*.pyc
+
+# Ignoriere temporäre/generierte Excel-Dateien, aber behalte die Systemdaten-Regeln
+**/Excel_Sammlung/
+**/Excel_Sammlung/*
+**/Excel_Sammlung/*.xlsx
+*.xlsx
+!Systemdaten/*.xlsx
