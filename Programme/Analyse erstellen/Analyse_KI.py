@@ -58,8 +58,10 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
     
     # 1. Cache Check
     for item in items_to_classify:
+        supplier = item.get('supplier') or item.get('Lieferant', 'Unbekannt')
+        desc = item.get('desc') or item.get('Beschreibung', '')
         # Key: "Lieferant | Beschreibung"
-        cache_key = f"{item['supplier']} | {item['desc']}".strip().upper()
+        cache_key = f"{supplier} | {desc}".strip().upper()
         if cache_key in memory:
             results[item['id']] = memory[cache_key]
         else:
@@ -96,7 +98,9 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
         
         prompt_text = "Bitte klassifiziere folgende Artikel:\n"
         for local_idx, item in enumerate(chunk):
-            prompt_text += f"[{local_idx}] {item['supplier']} | {item['desc']}\n"
+            supplier = item.get('supplier') or item.get('Lieferant', 'Unbekannt')
+            desc = item.get('desc') or item.get('Beschreibung', '')
+            prompt_text += f"[{local_idx}] {supplier} | {desc}\n"
             
         print(f"-> Batch {i//chunk_size + 1}/{(total_items-1)//chunk_size + 1} ({len(chunk)} Artikel)...")
         
