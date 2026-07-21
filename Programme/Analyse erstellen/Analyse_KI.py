@@ -86,7 +86,7 @@ def analyze_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, system_in
     client = genai.Client(api_key=api_key)
     
     # 2. Batch Processing
-    chunk_size = 50
+    chunk_size = 15
     current_model = 'gemini-3.5-flash'
     total_items = len(items_for_api)
     new_memory_entries = False
