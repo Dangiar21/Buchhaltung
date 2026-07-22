@@ -136,6 +136,9 @@ class BuchhaltungApp(TkDnD):
         
         self.btn_new_client = ctk.CTkButton(self.client_frame, text="+ Neuer Kunde", command=self.open_new_client_dialog, fg_color="#2b9e4a", hover_color="#217a39")
         self.btn_new_client.pack(fill="x")
+        
+        self.btn_edit_client = ctk.CTkButton(self.client_frame, text="Kunde bearbeiten", command=self.open_edit_client_dialog, fg_color="#e58e26", hover_color="#b36916")
+        self.btn_edit_client.pack(fill="x", pady=(5, 0))
 
         self.sidebar_btn_1 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_preview'], command=self.show_xml_preview, text_color=("black", "white"))
         self.sidebar_btn_1.grid(row=2, column=0, padx=20, pady=10)
@@ -543,11 +546,11 @@ class BuchhaltungApp(TkDnD):
             if os.path.exists(last_client_file):
                 try:
                     import json
-                    with open(last_client_file, "r") as f:
+                    with open(last_client_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         saved_client = data.get("last_client")
                 except Exception as e:
-                    pass
+                    print(f"Fehler beim Laden des letzten Kunden: {e}")
             
             if saved_client and saved_client in self.all_clients:
                 self.current_client = saved_client
@@ -612,7 +615,7 @@ class BuchhaltungApp(TkDnD):
             try:
                 import json
                 last_client_file = os.path.join(self.base_kunden_dir, "last_client.json")
-                with open(last_client_file, "w") as f:
+                with open(last_client_file, "w", encoding="utf-8") as f:
                     json.dump({"last_client": self.current_client}, f)
             except Exception as e:
                 print(f"Fehler beim Speichern des letzten Kunden: {e}")
@@ -629,29 +632,149 @@ class BuchhaltungApp(TkDnD):
         else:
             self.current_client = None
 
-    def open_new_client_dialog(self):
+    def open_edit_client_dialog(self):
+        if not self.current_client or self.current_client == "Kein Kunde":
+            print("\n❌ Bitte wähle zuerst einen Kunden aus, den du bearbeiten möchtest!")
+            return
+        self.open_new_client_dialog(edit_client_name=self.current_client)
+
+    def open_new_client_dialog(self, edit_client_name=None):
+        is_edit = edit_client_name is not None
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Neuer Kunde")
-        dialog.geometry("400x350")
+        dialog.title("Kunde bearbeiten" if is_edit else "Neuer Kunde")
+        dialog.geometry("500x600")
         dialog.attributes('-topmost', 'true')
         
-        lbl = ctk.CTkLabel(dialog, text="Neuen Kunden anlegen", font=ctk.CTkFont(size=16, weight="bold"))
-        lbl.pack(pady=15)
+        lbl = ctk.CTkLabel(dialog, text=f"Kunde '{edit_client_name}' bearbeiten" if is_edit else "Neuen Kunden anlegen", font=ctk.CTkFont(size=18, weight="bold"))
+        lbl.pack(pady=(15, 5))
         
-        name_entry = ctk.CTkEntry(dialog, placeholder_text="Kundenname / Ordnername", width=300)
-        name_entry.pack(pady=10)
+        tabview = ctk.CTkTabview(dialog, width=450, height=450)
+        tabview.pack(pady=10, padx=20, fill="both", expand=True)
         
-        info_text = ctk.CTkTextbox(dialog, width=300, height=150)
-        info_text.insert("1.0", "Weitere Infos (USt-IdNr., Steuernummer, etc.)")
-        info_text.pack(pady=10)
+        tabview.add("Basis & KI")
+        tabview.add("Steuerdaten")
+        tabview.add("Buchhaltung")
+        tabview.add("Kontakt")
+        
+        # --- Tab 1: Basis & KI ---
+        lbl_name = ctk.CTkLabel(tabview.tab("Basis & KI"), text="Firmenname (Ordnername) *")
+        lbl_name.pack(anchor="w", padx=10, pady=(10, 0))
+        name_entry = ctk.CTkEntry(tabview.tab("Basis & KI"), width=400)
+        name_entry.pack(padx=10, pady=(0, 10))
+        
+        lbl_forma = ctk.CTkLabel(tabview.tab("Basis & KI"), text="Rechtsform")
+        lbl_forma.pack(anchor="w", padx=10)
+        forma_combo = ctk.CTkOptionMenu(tabview.tab("Basis & KI"), values=["Srl", "SpA", "snc", "sas", "Ditta Individuale", "Libero Professionista", "Altro"], width=400)
+        forma_combo.pack(padx=10, pady=(0, 10))
+        forma_combo.set("Srl")
+        
+        lbl_desc = ctk.CTkLabel(tabview.tab("Basis & KI"), text="Beschreibung (Wichtig für KI)")
+        lbl_desc.pack(anchor="w", padx=10)
+        desc_text = ctk.CTkTextbox(tabview.tab("Basis & KI"), width=400, height=150)
+        desc_text.pack(padx=10, pady=(0, 10))
+        
+        # --- Tab 2: Steuerdaten ---
+        lbl_piva = ctk.CTkLabel(tabview.tab("Steuerdaten"), text="Partita IVA (MwSt.-Nummer) *")
+        lbl_piva.pack(anchor="w", padx=10, pady=(10, 0))
+        piva_entry = ctk.CTkEntry(tabview.tab("Steuerdaten"), width=400)
+        piva_entry.pack(padx=10, pady=(0, 10))
+        
+        lbl_cf = ctk.CTkLabel(tabview.tab("Steuerdaten"), text="Codice Fiscale")
+        lbl_cf.pack(anchor="w", padx=10)
+        cf_entry = ctk.CTkEntry(tabview.tab("Steuerdaten"), width=400)
+        cf_entry.pack(padx=10, pady=(0, 10))
+        
+        # --- Tab 3: Buchhaltung ---
+        lbl_regime = ctk.CTkLabel(tabview.tab("Buchhaltung"), text="Regime Contabile")
+        lbl_regime.pack(anchor="w", padx=10, pady=(10, 0))
+        regime_combo = ctk.CTkOptionMenu(tabview.tab("Buchhaltung"), values=["Ordinaria", "Semplificata", "Forfettario"], width=400)
+        regime_combo.pack(padx=10, pady=(0, 10))
+        regime_combo.set("Ordinaria")
+        
+        lbl_liq = ctk.CTkLabel(tabview.tab("Buchhaltung"), text="Liquidazione IVA")
+        lbl_liq.pack(anchor="w", padx=10)
+        liq_combo = ctk.CTkOptionMenu(tabview.tab("Buchhaltung"), values=["Mensile", "Trimestrale"], width=400)
+        liq_combo.pack(padx=10, pady=(0, 10))
+        liq_combo.set("Mensile")
+        
+        # --- Tab 4: Kontakt ---
+        lbl_addr = ctk.CTkLabel(tabview.tab("Kontakt"), text="Adresse (Sede Legale)")
+        lbl_addr.pack(anchor="w", padx=10, pady=(10, 0))
+        addr_entry = ctk.CTkEntry(tabview.tab("Kontakt"), width=400)
+        addr_entry.pack(padx=10, pady=(0, 10))
+        
+        lbl_pec = ctk.CTkLabel(tabview.tab("Kontakt"), text="PEC")
+        lbl_pec.pack(anchor="w", padx=10)
+        pec_entry = ctk.CTkEntry(tabview.tab("Kontakt"), width=400)
+        pec_entry.pack(padx=10, pady=(0, 10))
+        
+        lbl_sdi = ctk.CTkLabel(tabview.tab("Kontakt"), text="Codice Destinatario (SDI)")
+        lbl_sdi.pack(anchor="w", padx=10)
+        sdi_entry = ctk.CTkEntry(tabview.tab("Kontakt"), width=400)
+        sdi_entry.pack(padx=10, pady=(0, 10))
+        
+        lbl_iban = ctk.CTkLabel(tabview.tab("Kontakt"), text="IBAN")
+        lbl_iban.pack(anchor="w", padx=10)
+        iban_entry = ctk.CTkEntry(tabview.tab("Kontakt"), width=400)
+        iban_entry.pack(padx=10, pady=(0, 10))
+        
+        if is_edit:
+            name_entry.insert(0, edit_client_name)
+            name_entry.configure(state="disabled")
+            
+            import json
+            info_path = os.path.join(self.base_kunden_dir, edit_client_name, "Nutzerdaten", "info.json")
+            if os.path.exists(info_path):
+                try:
+                    with open(info_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if "Rechtsform" in data: forma_combo.set(data["Rechtsform"])
+                        if "Beschreibung" in data: 
+                            desc_text.delete("1.0", "end")
+                            desc_text.insert("1.0", data["Beschreibung"])
+                        if "Partita_IVA" in data: piva_entry.insert(0, data["Partita_IVA"])
+                        if "Codice_Fiscale" in data: cf_entry.insert(0, data["Codice_Fiscale"])
+                        if "Regime_Contabile" in data: regime_combo.set(data["Regime_Contabile"])
+                        if "Liquidazione_IVA" in data: liq_combo.set(data["Liquidazione_IVA"])
+                        if "Adresse" in data: addr_entry.insert(0, data["Adresse"])
+                        if "PEC" in data: pec_entry.insert(0, data["PEC"])
+                        if "SDI" in data: sdi_entry.insert(0, data["SDI"])
+                        if "IBAN" in data: iban_entry.insert(0, data["IBAN"])
+                except Exception as e:
+                    print(f"Fehler beim Laden der Kundendaten: {e}")
         
         def save_client():
             name_raw = name_entry.get().strip()
             if not name_raw:
+                print("Fehler: Firmenname darf nicht leer sein!")
                 return
                 
             name = re.sub(r'[<>:"/\\|?*]', '_', name_raw)
             
+            if is_edit:
+                info_nutzerdaten_dir = os.path.join(self.base_kunden_dir, name, "Nutzerdaten")
+                client_data = {
+                    "Kundenname": name,
+                    "Rechtsform": forma_combo.get(),
+                    "Beschreibung": desc_text.get("1.0", "end").strip(),
+                    "Partita_IVA": piva_entry.get().strip(),
+                    "Codice_Fiscale": cf_entry.get().strip(),
+                    "Regime_Contabile": regime_combo.get(),
+                    "Liquidazione_IVA": liq_combo.get(),
+                    "Adresse": addr_entry.get().strip(),
+                    "PEC": pec_entry.get().strip(),
+                    "SDI": sdi_entry.get().strip(),
+                    "IBAN": iban_entry.get().strip()
+                }
+                import json
+                info_path = os.path.join(info_nutzerdaten_dir, "info.json")
+                with open(info_path, "w", encoding="utf-8") as f:
+                    json.dump(client_data, f, ensure_ascii=False, indent=4)
+                
+                print(f"\n=> Kunde '{name}' erfolgreich aktualisiert!")
+                dialog.destroy()
+                return
+
             client_dir = os.path.join(self.base_kunden_dir, name)
             if not os.path.exists(client_dir):
                 os.makedirs(client_dir)
@@ -664,19 +787,32 @@ class BuchhaltungApp(TkDnD):
                 if ensure_konten_template:
                     ensure_konten_template(info_nutzerdaten_dir)
                 
-                info = info_text.get("1.0", "end").strip()
-                if info and info != "Weitere Infos (USt-IdNr., Steuernummer, etc.)":
-                    import json
-                    info_path = os.path.join(info_nutzerdaten_dir, "info.json")
-                    with open(info_path, "w", encoding="utf-8") as f:
-                        json.dump({"Kundenname": name, "Zusatzinfos": info}, f, ensure_ascii=False, indent=4)
+                # Sammle alle Daten in einem Dictionary
+                client_data = {
+                    "Kundenname": name,
+                    "Rechtsform": forma_combo.get(),
+                    "Beschreibung": desc_text.get("1.0", "end").strip(),
+                    "Partita_IVA": piva_entry.get().strip(),
+                    "Codice_Fiscale": cf_entry.get().strip(),
+                    "Regime_Contabile": regime_combo.get(),
+                    "Liquidazione_IVA": liq_combo.get(),
+                    "Adresse": addr_entry.get().strip(),
+                    "PEC": pec_entry.get().strip(),
+                    "SDI": sdi_entry.get().strip(),
+                    "IBAN": iban_entry.get().strip()
+                }
+                
+                import json
+                info_path = os.path.join(info_nutzerdaten_dir, "info.json")
+                with open(info_path, "w", encoding="utf-8") as f:
+                    json.dump(client_data, f, ensure_ascii=False, indent=4)
                 
                 print(f"\n=> Kunde '{name}' erfolgreich angelegt!")
                 self.refresh_clients()
                 self.select_client_from_list(name)
                 dialog.destroy()
             else:
-                print(f"Kunde {name} existiert bereits!")
+                print(f"Kunde '{name}' existiert bereits!")
                 
         btn_save = ctk.CTkButton(dialog, text="Speichern", command=save_client)
         btn_save.pack(pady=10)

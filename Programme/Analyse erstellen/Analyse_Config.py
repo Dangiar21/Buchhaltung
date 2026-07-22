@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import Font
 
 def get_setup_path(nutzerdaten_dir):

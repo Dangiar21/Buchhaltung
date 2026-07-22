@@ -2,7 +2,7 @@ import sqlite3
 import os
 import json
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 class DatabaseManager:
     _instance = None
@@ -99,7 +99,8 @@ class DatabaseManager:
             cache_key = f"{supplier} | {desc}".strip().upper()
             try:
                 memory[cache_key] = json.loads(result_json)
-            except:
+            except Exception as e:
+                print(f'Fehler: {e}')
                 memory[cache_key] = result_json
         return memory
 
@@ -185,17 +186,16 @@ class DatabaseManager:
         """Bulk insert rules using pandas to_sql."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM kontenregeln WHERE kunden_id = ? AND regel_typ = ?', (kunden_id, regel_typ))
+            cursor.execute('DELETE FROM kontenregeln WHERE kunden_id = ?', (kunden_id,))
             if not rules_df.empty:
                 # Ensure kunden_id is the sync group ID
                 rules_df['kunden_id'] = kunden_id
-                rules_df['regel_typ'] = regel_typ
                 rules_df.to_sql('kontenregeln', conn, if_exists='append', index=False)
             conn.commit()
             
-    def get_rules(self, kunden_id: str, regel_typ: str) -> pd.DataFrame:
+    def get_rules(self, kunden_id: str, sync_group: str) -> pd.DataFrame:
         with self.get_connection() as conn:
-            return pd.read_sql_query('SELECT * FROM kontenregeln WHERE kunden_id = ? AND regel_typ = ?', conn, params=(kunden_id, regel_typ))
+            return pd.read_sql_query('SELECT * FROM kontenregeln WHERE kunden_id = ?', conn, params=(kunden_id,))
 
     # --- UI Cache Editor Helpers ---
     def delete_cache_entry(self, cache_type: str, kunden_id: str, cache_key: str):

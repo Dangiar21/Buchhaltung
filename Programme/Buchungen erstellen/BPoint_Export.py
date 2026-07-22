@@ -1,6 +1,6 @@
 import pandas as pd
 import csv
-import numpy as np
+
 import os
 
 def export_to_bpoint_csv(df, output_path):

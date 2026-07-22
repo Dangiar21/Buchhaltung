@@ -1,6 +1,6 @@
 import defusedxml.ElementTree as ET
 import os
-import base64
+
 from asn1crypto import cms
 
 def decrypt_p7m(file_path):

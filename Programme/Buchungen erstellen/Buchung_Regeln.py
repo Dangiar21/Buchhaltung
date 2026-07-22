@@ -97,6 +97,7 @@ def ensure_rule_file(file_path):
     ws_lief = wb["Lieferanten-Regeln"]
     has_dv = any(dv.formula1 == dv_formula for dv in ws_lief.data_validations.dataValidation)
     if not has_dv:
+        ws_lief.data_validations.dataValidation = []
         dv_lief = DataValidation(type="list", formula1=dv_formula, allow_blank=True)
         dv_lief.error = 'Das eingegebene Konto existiert nicht im Kontenplan!'
         dv_lief.errorTitle = 'Ungültiges Konto'
@@ -109,6 +110,7 @@ def ensure_rule_file(file_path):
     ws_stich = wb["Stichwort-Regeln"]
     has_dv_stich = any(dv.formula1 == dv_formula for dv in ws_stich.data_validations.dataValidation)
     if not has_dv_stich:
+        ws_stich.data_validations.dataValidation = []
         dv_stich = DataValidation(type="list", formula1=dv_formula, allow_blank=True)
         dv_stich.error = 'Das eingegebene Konto existiert nicht im Kontenplan!'
         dv_stich.errorTitle = 'Ungültiges Konto'
@@ -120,12 +122,22 @@ def ensure_rule_file(file_path):
 
     ws_ki = wb["KI-Zuweisungen"]
     has_dv_status = any(dv.formula1 == '"AUSSTEHEND,BESTÄTIGT"' for dv in ws_ki.data_validations.dataValidation)
-    if not has_dv_status:
+    has_dv_konto = any(dv.formula1 == dv_formula for dv in ws_ki.data_validations.dataValidation)
+    if not has_dv_status or not has_dv_konto:
+        ws_ki.data_validations.dataValidation = []
         dv_status = DataValidation(type="list", formula1='"AUSSTEHEND,BESTÄTIGT"', allow_blank=True)
         dv_status.error = 'Bitte wähle einen gültigen Status!'
         dv_status.errorTitle = 'Ungültiger Status'
         ws_ki.add_data_validation(dv_status)
         dv_status.add("G2:G1000")
+        
+        dv_konto = DataValidation(type="list", formula1=dv_formula, allow_blank=True)
+        dv_konto.error = 'Das eingegebene Konto existiert nicht im Kontenplan!'
+        dv_konto.errorTitle = 'Ungültiges Konto'
+        dv_konto.prompt = 'Bitte ein Konto aus der Dropdown-Liste wählen'
+        dv_konto.promptTitle = 'Konto auswählen'
+        ws_ki.add_data_validation(dv_konto)
+        dv_konto.add("F2:F1000")
         
         red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
         green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
@@ -179,6 +191,7 @@ def load_rules(global_path, client_path):
                     lief = str(row.iloc[0]).strip().lower()
                     konto_raw = str(row.iloc[1]).strip()
                     konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    if konto.endswith('.0'): konto = konto[:-2]
                     if lief and lief != 'nan' and konto:
                         rules_list.append({"prioritaet": 3, "lieferant": lief, "konto": konto, "regel_typ": "global_lieferant"})
                         
@@ -186,6 +199,7 @@ def load_rules(global_path, client_path):
                     stich = str(row.iloc[0]).strip().lower()
                     konto_raw = str(row.iloc[1]).strip()
                     konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    if konto.endswith('.0'): konto = konto[:-2]
                     if stich and stich != 'nan' and konto:
                         rules_list.append({"prioritaet": 2, "suchbegriff": stich, "konto": konto, "regel_typ": "global_stichwort"})
                         
@@ -196,8 +210,9 @@ def load_rules(global_path, client_path):
                         k_id = normalize_id(row.get("Kunden ID", ""))
                         desc_raw = row.get("Beschreibung", "")
                         desc = "" if (pd.isna(desc_raw) or str(desc_raw).strip().lower() == 'nan') else str(desc_raw).strip().upper()
-                        konto_raw = row.get("Konto", "")
+                        konto_raw = str(row.get("Konto", ""))
                         konto = "" if (pd.isna(konto_raw) or str(konto_raw).strip().lower() == 'nan') else str(konto_raw).strip().split(' ')[0]
+                        if konto.endswith('.0'): konto = konto[:-2]
                         status = str(row.get("Status", "")).strip().upper()
                         
                         if konto:
@@ -219,7 +234,7 @@ def load_rules(global_path, client_path):
     if client_path and os.path.exists(client_path):
         client_id = os.path.basename(os.path.dirname(client_path))
         if client_id == "Nutzerdaten":
-             client_id = os.path.basename(os.path.dirname(os.path.dirname(client_path)))
+            client_id = os.path.basename(os.path.dirname(os.path.dirname(client_path)))
              
         client_mtime = os.path.getmtime(client_path)
         last_sync = db.get_sync_status(client_id, "client_rules")
@@ -233,6 +248,7 @@ def load_rules(global_path, client_path):
                     stich = str(row.iloc[0]).strip().lower()
                     konto_raw = str(row.iloc[1]).strip()
                     konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    if konto.endswith('.0'): konto = konto[:-2]
                     if stich and stich != 'nan' and konto:
                         rules_list.append({"prioritaet": 1, "suchbegriff": stich, "konto": konto, "regel_typ": "client_stichwort"})
                         
@@ -286,12 +302,12 @@ def assign_account(desc_norm, desc, supplier_name, supplier_vat, kunden_id, rule
     if ai_key in rules["ai_pending"]:
         return str(rules["ai_pending"][ai_key]), True
     
-    # 1. Priorität: Kunde Stichwort
+    # 1. Priorität: Kunden-Stichwort-Regel
     for stich, konto in rules["client_stichwort"].items():
         if stich in desc:
             return str(konto), False
             
-    # 2. Priorität: Global Stichwort
+    # 2. Priorität: Globale Stichwort-Regel
     for stich, konto in rules["global_stichwort"].items():
         if stich in desc:
             return str(konto), False

@@ -2,7 +2,6 @@ import sys
 import os
 import traceback
 import re
-import io
 
 # Utils aus dem übergeordneten Ordner laden
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -11,9 +10,6 @@ from utils import load_or_create_targa_list, append_new_targas_to_excel, ask_sho
 try:
     import defusedxml.ElementTree as ET
     import pandas as pd
-    from openpyxl import Workbook, load_workbook
-    from openpyxl.worksheet.datavalidation import DataValidation
-    from openpyxl.styles import Font
 except Exception as e:
     print(f"Fehler beim Laden der Module: {e}")
     print("Hast du 'pip install pandas openpyxl defusedxml' im Terminal ausgeführt?")
@@ -231,7 +227,8 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                                 length = len(val_str)
                                 if length > max_length:
                                     max_length = length
-                        except:
+                        except Exception as e:
+                            print(f'Fehler: {e}')
                             pass
                     
                     adjusted_width = max_length + 6 

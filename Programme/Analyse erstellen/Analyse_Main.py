@@ -1,6 +1,6 @@
 import sys
 import os
-import io
+
 import traceback
 import datetime
 from openpyxl import Workbook, load_workbook
@@ -175,7 +175,7 @@ def run_analyse(rechnungs_ordner, kunden_name, base_dir, nutzerdaten_dir):
             ws_raw.cell(row=row, column=7).number_format = euro_format # Preis
             
         wb.save(ausgabe_datei)
-        print(f"\n✅ Analyse erfolgreich abgeschlossen!")
+        print("\n✅ Analyse erfolgreich abgeschlossen!")
         print(f"Ergebnis gespeichert unter:\n{ausgabe_datei}")
         
         # Datei öffnen

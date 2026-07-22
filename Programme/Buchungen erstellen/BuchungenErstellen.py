@@ -8,14 +8,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils import load_or_create_targa_list, append_new_targas_to_excel, ask_shorten_desc, get_text, safe_float, read_xml_or_p7m
 
 # 1. Wir versuchen die Module zu laden. Wenn das fehlschlägt, fangen wir den Fehler ab.
-import io
 import Buchung_Regeln
 try:
     import defusedxml.ElementTree as ET
     import pandas as pd
-    from openpyxl import Workbook, load_workbook
-    from openpyxl.worksheet.datavalidation import DataValidation
-    from openpyxl.styles import Font
 except Exception as e:
     print(f"Fehler beim Laden der Module: {e}")
     print("Hast du 'pip install pandas openpyxl' im Terminal ausgeführt?")
@@ -72,7 +68,7 @@ def save_ai_assignments_to_excel(global_rules_path, new_assignments):
     except Exception as e:
         print(f"Fehler beim Anhängen der KI-Zuweisungen: {e}")
 
-def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True):
+def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True, client_vat_id=""):
     print(f"Lese: {xml_path}")
     rechnungspositionen = []
     
@@ -182,7 +178,15 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             # Konto ermitteln
             conto, is_pending = Buchung_Regeln.assign_account(desc_norm, desc_short, lieferant, liefer_id, kunden_id, rules_dict)
             
+            aktiv_passiv = ""
+            if client_vat_id:
+                if liefer_id == client_vat_id:
+                    aktiv_passiv = "Attiva"
+                elif kunden_id == client_vat_id:
+                    aktiv_passiv = "Passiva"
+            
             rechnungspositionen.append({
+                'Aktiv/Passiv': aktiv_passiv,
                 'Typ': dokumenttyp,
                 'Rechnungsnummer': rechnungs_nummer,
                 'Datum': rechnungs_datum,
@@ -249,6 +253,18 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
             neue_targas_set = set()
             fehler_log = []
             
+            client_vat_id = ""
+            if nutzerdaten_dir:
+                info_path = os.path.join(nutzerdaten_dir, "info.json")
+                if os.path.exists(info_path):
+                    try:
+                        import json
+                        with open(info_path, "r", encoding="utf-8") as f:
+                            client_data = json.load(f)
+                            client_vat_id = client_data.get("Partita_IVA", "").strip()
+                    except Exception as e:
+                        print(f"Fehler beim Lesen von info.json: {e}")
+            
             shorten_description = ask_shorten_desc()
 
             pdf_paths = []
@@ -256,7 +272,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 if os.path.isfile(pfad):
                     lower_pfad = pfad.lower()
                     if lower_pfad.endswith('.xml') or lower_pfad.endswith('.p7m'):
-                        alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description))
+                        alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id))
                     elif lower_pfad.endswith('.pdf'):
                         pdf_paths.append(pfad)
                 elif os.path.isdir(pfad):
@@ -265,7 +281,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         for filename in files:
                             lower_file = filename.lower()
                             if lower_file.endswith('.xml') or lower_file.endswith('.p7m'):
-                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description))
+                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id))
                             elif lower_file.endswith('.pdf'):
                                 pdf_paths.append(os.path.join(root_dir, filename))
                 else:
@@ -315,7 +331,15 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                             qty = safe_float(pos.get('Menge', 1.0), 1.0, faktor)
                             price = safe_float(pos.get('Einzelpreis', 0.0), 0.0)
                             
+                            aktiv_passiv = ""
+                            if client_vat_id:
+                                if liefer_id == client_vat_id:
+                                    aktiv_passiv = "Attiva"
+                                elif kunden_id == client_vat_id:
+                                    aktiv_passiv = "Passiva"
+                            
                             alle_positionen.append({
+                                'Aktiv/Passiv': aktiv_passiv,
                                 'Typ': typ,
                                 'Rechnungsnummer': pos.get('Rechnungsnummer', ''),
                                 'Datum': pos.get('Datum', ''),
@@ -447,7 +471,8 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                                 length = len(val_str)
                                 if length > max_length:
                                     max_length = length
-                        except:
+                        except Exception as e:
+                            print(f'Fehler: {e}')
                             pass
                     
                     # Breite = maximale Textlänge + Puffer (ca. 1cm)
@@ -467,7 +492,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
 
                 euro_format = '#,##0.00 €'
                 percent_format = '0.00%'
-                from openpyxl.styles import Font, PatternFill
+                from openpyxl.styles import Font
                 link_font = Font(color="0563C1", underline="single")
                 red_font = Font(color="FF0000", bold=True)
                 conto_col = col_indices.get('Conto')
@@ -484,6 +509,13 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     
                     if conto_col and row in ai_indices:
                         worksheet.cell(row=row, column=conto_col).font = red_font
+                
+                try:
+                    import Bilanz_Struktur
+                    sys_dir = os.path.join(base_dir, "Systemdaten")
+                    Bilanz_Struktur.generate_bilanz_worksheet(writer, alle_positionen, sys_dir)
+                except Exception as e:
+                    print(f"Fehler beim Erstellen der Bilanz: {e}")
                 
                 writer.close()
                 

@@ -1,6 +1,6 @@
 import os
 import json
-import shutil
+
 import customtkinter as ctk
 import sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -152,7 +152,8 @@ class CacheEditorFrame(ctk.CTkFrame):
                         else:
                             parsed = val_str
                         new_entries[key] = parsed
-                    except:
+                    except Exception as e:
+                        print(f'Fehler: {e}')
                         new_entries[key] = val_str
                         
             if new_entries:

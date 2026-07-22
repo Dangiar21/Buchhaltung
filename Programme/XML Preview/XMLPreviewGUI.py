@@ -1,6 +1,6 @@
 import customtkinter as ctk
 import os
-import json
+
 import base64
 from tkinter import filedialog
 from InvoiceParser import parse_invoice
@@ -193,6 +193,13 @@ class XMLPreviewFrame(ctk.CTkFrame):
         self.selected_months = set()
         self.selected_cedente = None
         self.selected_cessionario = None
+        
+        # Initialize UI elements to avoid AttributeError
+        self.settings_popup = None
+        self.month_popup = None
+        self.lbl_path = None
+        self.paper = None
+        self.current_view = None
         
         # --- Top Bar (Years and Months) ---
         self.top_bar = ctk.CTkFrame(self, corner_radius=0, fg_color=("gray85", "gray17"))
@@ -805,7 +812,8 @@ class XMLPreviewFrame(ctk.CTkFrame):
                 v = float(val_str)
                 parts = f"{v:,.2f}".split('.')
                 return f"{parts[0].replace(',', '.')},{parts[1]}"
-            except:
+            except Exception as e:
+                print(f'Fehler: {e}')
                 return val_str
                 
         mp_map = {
