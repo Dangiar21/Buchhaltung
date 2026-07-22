@@ -39,38 +39,42 @@ def get_api_key(base_dir: str) -> str:
     return None
 
 def build_system_instruction(nutzerdaten_dir: str) -> str:
-    konten = []
-    client_rules_path = os.path.join(nutzerdaten_dir, "Kunden_KontenRegeln.xlsx")
-    if os.path.exists(client_rules_path):
-        import pandas as pd
+    client_info = ""
+    info_path = os.path.join(nutzerdaten_dir, "info.json")
+    if os.path.exists(info_path):
         try:
-            df = pd.read_excel(client_rules_path, sheet_name='Kontenplan')
-            for _, row in df.iterrows():
-                if pd.notna(row.get('Konto-Nummer')):
-                    konten.append({
-                        "Konto": str(row['Konto-Nummer']).replace('.0', ''),
-                        "Bezeichnung": str(row.get('Bezeichnung', '')),
-                        "Beschreibung": ""
-                    })
-        except Exception as e:
-            print("Fehler beim Lesen des Kontenplans:", e)
+            with open(info_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                client_info = f"Informationen zum Kundenunternehmen:\nName: {data.get('Kundenname', '')}\nBeschreibung: {data.get('Beschreibung', '')}\n\n"
+        except Exception:
+            pass
 
+    kontenplan_text = "Kein Kontenplan hinterlegt."
+    txt_path = os.path.join(nutzerdaten_dir, "KI_Kontenplan.txt")
+    if os.path.exists(txt_path):
+        try:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                kontenplan_text = f.read()
+        except Exception:
+            pass
+            
     instruction = "Du bist ein KI-Buchhalter für den italienischen SDI Standard (XML/P7M).\n"
     instruction += "Deine Aufgabe ist es, Rechnungs-Artikel einem passenden FIBU-Konto zuzuordnen.\n\n"
+    instruction += client_info
     
     instruction += "HINTERGRUND (Kontenplan):\n"
-    for k in konten:
-        instruction += f"- Konto {k['Konto']}: {k['Bezeichnung']} ({k['Beschreibung']})\n"
-        
-    instruction += "\nREGELN FÜR DIE AUSGABE:\n"
-    instruction += "1. Du erhältst eine Liste von Artikeln im Format: ID | Lieferant | Beschreibung\n"
-    instruction += "2. Bestimme für JEDEN Artikel das passendste Konto (ausschließlich die Kontonummer als String).\n"
+    instruction += kontenplan_text + "\n\n"
+    
+    instruction += "REGELN FÜR DIE AUSGABE:\n"
+    instruction += "1. Du erhältst eine Liste von Artikeln im Format: ID: [id] | Eigenschaft: Wert | ...\n"
+    instruction += "2. Bestimme für JEDEN Artikel das passendste Konto aus dem obigen Kontenplan.\n"
     instruction += "3. Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt. Keine Markdown-Blöcke, kein anderer Text.\n"
     instruction += "4. Die Schlüssel im JSON-Objekt sind die IDs der Artikel (als String).\n"
-    instruction += "5. Wenn du unsicher bist, wähle das Konto 'Sonstiges' (falls vorhanden) oder lass den Wert leer ('').\n\n"
+    instruction += "5. Der Wert ist ausschließlich das exakte Konto (z.B. 100 / 801006) genau wie im Kontenplan gelistet als String.\n"
+    instruction += "6. Wenn du unsicher bist, lass den Wert leer ('').\n\n"
     
     instruction += "BEISPIEL-ANTWORT:\n"
-    instruction += "{\n  \"0\": \"3200\",\n  \"1\": \"3250\",\n  \"2\": \"\"\n}"
+    instruction += "{\n  \"0\": \"100 / 801006\",\n  \"1\": \"104 / 821249\",\n  \"2\": \"\"\n}"
     
     return instruction
 
@@ -79,7 +83,11 @@ async def process_batch_async(client, chunk, system_instruction, current_model, 
         print(f"-> Starte Batch {batch_num}/{total_batches} ({len(chunk)} Artikel)...")
         prompt_text = "Bitte klassifiziere folgende Artikel:\n"
         for local_idx, item in enumerate(chunk):
-            prompt_text += f"ID: {local_idx} | Lieferant: {item['supplier']} | Beschreibung: {item['desc']}\n"
+            prompt_text += f"ID: {local_idx} | "
+            for k, v in item.items():
+                if k not in ['id', 'cache_key'] and str(v).strip() != "":
+                    prompt_text += f"{k}: {v} | "
+            prompt_text += "\n"
             
         try:
             from google.genai import types
@@ -152,9 +160,11 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
     
     # 1. Cache Check
     for item in items_to_classify:
-        supplier = item.get('supplier') or item.get('Lieferant', 'Unbekannt')
-        desc = item.get('desc') or item.get('Beschreibung', '')
-        cache_key = f"{supplier} | {desc}".strip().upper()
+        cache_parts = []
+        for k in sorted(item.keys()):
+            if k not in ['id', 'cache_key']:
+                cache_parts.append(f"{k}:{item[k]}")
+        cache_key = " | ".join(cache_parts).strip().upper()
         
         if cache_key in memory:
             results[item['id']] = memory[cache_key]

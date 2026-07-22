@@ -376,13 +376,14 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         desc_norm = re.sub(r'\s+', ' ', pos.get('Beschreibung', '')).strip().upper()
                         key = (pos.get('Liefer ID', ''), desc_norm, pos.get('Kunden ID', ''))
                         if key not in unique_unknowns:
+                            excluded_keys = {'Typ', 'Liefer ID', 'Kunden ID', 'Menge', 'MwSt Satz', 'Dateiname', 'Conto', 'is_pending'}
+                            item_data = {'id': str(len(unique_unknowns))}
+                            for k, v in pos.items():
+                                if k not in excluded_keys and not str(k).startswith('Einzelpreis') and not str(k).startswith('Gesamtpreis'):
+                                    item_data[k] = v
+                                    
                             unique_unknowns[key] = {
-                                'item': {
-                                    'id': str(len(unique_unknowns)),
-                                    'desc': pos.get('Beschreibung', ''),
-                                    'supplier': pos.get('Lieferant', ''), # Wir senden weiterhin den Namen für besseren KI-Kontext
-                                    'kunde': pos.get('Kunde', '')
-                                },
+                                'item': item_data,
                                 'indices': []
                             }
                         unique_unknowns[key]['indices'].append(i)
@@ -402,9 +403,9 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                             
                             new_ai_assignments.append({
                                 'Lieferant ID': key[0],
-                                'Lieferant Name': data['item']['supplier'],
+                                'Lieferant Name': data['item'].get('Lieferant', ''),
                                 'Kunden ID': key[2],
-                                'Kunden Name': data['item']['kunde'],
+                                'Kunden Name': data['item'].get('Kunde', ''),
                                 'Beschreibung': key[1],
                                 'Konto': konto,
                                 'Status': 'AUSSTEHEND'
@@ -510,12 +511,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     if conto_col and row in ai_indices:
                         worksheet.cell(row=row, column=conto_col).font = red_font
                 
-                try:
-                    import Bilanz_Struktur
-                    sys_dir = os.path.join(base_dir, "Systemdaten")
-                    Bilanz_Struktur.generate_bilanz_worksheet(writer, alle_positionen, sys_dir)
-                except Exception as e:
-                    print(f"Fehler beim Erstellen der Bilanz: {e}")
+
                 
                 writer.close()
                 

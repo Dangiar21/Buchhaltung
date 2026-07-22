@@ -1,0 +1,3 @@
+- Konto 4000: Umsatzerlöse
+- Konto 5000: Wareneinkauf
+- Konto 7000: Dienstleistungen

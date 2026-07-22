@@ -1,0 +1,7 @@
+- Konto 0100: Anlagevermögen
+- Konto 3200: Waren / Material
+- Konto 4000: Umsatzerlöse
+- Konto 5000: Materialaufwand / Wareneinkauf
+- Konto 7000: Dienstleistungen
+- Konto 7010: Telefon und Internet
+- Konto 7020: Strom

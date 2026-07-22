@@ -668,6 +668,40 @@ class BuchhaltungApp(TkDnD):
         forma_combo.pack(padx=10, pady=(0, 10))
         forma_combo.set("Srl")
         
+        # KI-Kontenplan Template
+        if not is_edit:
+            lbl_template = ctk.CTkLabel(tabview.tab("Basis & KI"), text="KI-Kontenplan Vorlage")
+            lbl_template.pack(anchor="w", padx=10)
+            template_combo = ctk.CTkOptionMenu(tabview.tab("Basis & KI"), values=["Codice_Civile_2424", "Standard"], width=400)
+            template_combo.pack(padx=10, pady=(0, 10))
+            template_combo.set("Codice_Civile_2424")
+        else:
+            def open_ki_editor():
+                editor = ctk.CTkToplevel(dialog)
+                editor.title(f"KI-Kontenplan: {edit_client_name}")
+                editor.geometry("600x500")
+                editor.attributes('-topmost', 'true')
+                
+                txt = ctk.CTkTextbox(editor, width=550, height=400)
+                txt.pack(padx=20, pady=20)
+                
+                file_path = os.path.join(self.base_kunden_dir, edit_client_name, "Nutzerdaten", "KI_Kontenplan.txt")
+                if os.path.exists(file_path):
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        txt.insert("1.0", f.read())
+                        
+                def save_txt():
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(txt.get("1.0", "end-1c"))
+                    editor.destroy()
+                    print(f"KI-Kontenplan für {edit_client_name} gespeichert.")
+                    
+                btn_s = ctk.CTkButton(editor, text="Speichern", command=save_txt)
+                btn_s.pack()
+                
+            btn_edit_ki = ctk.CTkButton(tabview.tab("Basis & KI"), text="KI-Kontenplan bearbeiten", command=open_ki_editor, fg_color="#c85a17", hover_color="#a84b13")
+            btn_edit_ki.pack(padx=10, pady=(0, 10))
+
         lbl_desc = ctk.CTkLabel(tabview.tab("Basis & KI"), text="Beschreibung (Wichtig für KI)")
         lbl_desc.pack(anchor="w", padx=10)
         desc_text = ctk.CTkTextbox(tabview.tab("Basis & KI"), width=400, height=150)
@@ -786,6 +820,17 @@ class BuchhaltungApp(TkDnD):
                 
                 if ensure_konten_template:
                     ensure_konten_template(info_nutzerdaten_dir)
+                
+                # KI-Kontenplan Vorlage kopieren
+                template_name = template_combo.get()
+                template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Systemdaten", "Templates", f"{template_name}.txt")
+                target_txt_path = os.path.join(info_nutzerdaten_dir, "KI_Kontenplan.txt")
+                if os.path.exists(template_path):
+                    import shutil
+                    shutil.copy2(template_path, target_txt_path)
+                else:
+                    with open(target_txt_path, "w", encoding="utf-8") as f:
+                        f.write("HINTERGRUND:\n- Konto 0000: Unbekannt\n\nREGELN:\n")
                 
                 # Sammle alle Daten in einem Dictionary
                 client_data = {
