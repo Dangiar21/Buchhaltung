@@ -99,6 +99,10 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, shorten
             total = safe_float(total_text, 0.0, faktor)
             iva = safe_float(iva_text, 0.0)
             
+            # Überspringe reine Informationszeilen (Gesamtpreis == 0)
+            if total == 0.0:
+                continue
+            
             targa_gefunden = ""
             fahrzeugtyp = ""
             altri_dati = linea.findall('.//AltriDatiGestionali')

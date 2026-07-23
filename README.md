@@ -4,28 +4,28 @@ Ein intelligentes, automatisiertes Buchhaltungsprogramm zur Verwaltung, Auswertu
 
 ## 🚀 Funktionen
 - **Kundenverwaltung:** Strukturierte Ablage für beliebig viele Mandanten mit automatischer Speicherung des zuletzt genutzten Kunden.
-- **XML Preview:** Integrierte visuelle Vorschau für komplexe elektronische Rechnungen (XML/P7M).
+
 - **XML zu Excel:** Schnellkonvertierung von Rechnungsordnern in übersichtliche Excel-Tabellen.
 - **Automatisierte Kontierung:** Ein hybrides Regelsystem weist Rechnungen automatisch Konten zu (basiert auf kunden- und globalen Regeln).
-- **KI-Integration & Deduplizierung:** Unbekannte Rechnungen werden durch Google Gemini (KI) analysiert und dem passenden Konto zugewiesen. Ergebnisse werden lokal gecached (`Analyse_Memory.json` / `Konten_Memory.json`), um API-Kosten zu sparen und schnelle Durchläufe zu ermöglichen.
+- **KI-Integration & Deduplizierung:** Unbekannte Rechnungen werden durch hochpräzise Llama- & GPT-Modelle via Groq (KI) analysiert und dem passenden Konto zugewiesen. Ergebnisse werden lokal gecached (`Analyse_Memory.json` / `Konten_Memory.json`), um API-Kosten zu sparen und schnelle Durchläufe zu ermöglichen.
 - **Sektorenanalyse (NEU):** KI-gestützte, hochgradig anpassbare Auswertungen für Sektorenstudien (z. B. Fleischart/Bio-Anteil beim Metzger, Ersatzteile beim Mechaniker). Die Auswertung erfolgt über einfache Excel-Kategorien-Setups (`Analyse_Setup.xlsx`) und injiziert die Ergebnisse direkt in anpassbare Dashboard-Templates (`Dashboard_Template.xlsx`).
-- **Sicher & Robust:** Schutz vor XXE-Angriffen durch `defusedxml`, ASN.1 Krypto-Entschlüsselung für P7M-Dateien (`asn1crypto`) und automatische API-Modell-Fallbacks bei Google Server-Auslastungen (503/Quota Limits).
+- **Sicher & Robust:** Schutz vor XXE-Angriffen durch `defusedxml`, ASN.1 Krypto-Entschlüsselung für P7M-Dateien (`asn1crypto`) und automatische Retry-Fallbacks bei Limit-Auslastungen (429 Rate Limits).
 
 ## ⚙️ Installation & Setup auf einem neuen PC
 
 Wenn du dieses Projekt auf einen neuen PC klonst, beachte bitte die folgenden Schritte:
 
 ### 1. Bibliotheken installieren
-Führe nach dem Klonen die Datei **`install_dependencies.bat`** per Doppelklick aus. Sie installiert alle notwendigen Python-Bibliotheken (u. a. `pandas`, `customtkinter`, `google-genai`, `defusedxml`, `python-dotenv`).
+Führe nach dem Klonen die Datei **`install_dependencies.bat`** per Doppelklick aus. Sie installiert alle notwendigen Python-Bibliotheken (u. a. `pandas`, `customtkinter`, `groq`, `defusedxml`, `python-dotenv`).
 
-### 2. Gemini API-Key hinterlegen
+### 2. Groq API-Key hinterlegen
 Der API-Schlüssel für die Künstliche Intelligenz darf niemals öffentlich stehen und wird von Git ignoriert.
-- Erstelle im Ordner `Systemdaten` eine Datei namens **`gemini_key.env`** (oder `.env` im Hauptverzeichnis).
+- Erstelle im Ordner `Systemdaten` eine Datei namens **`groq_key.env`** (oder `.env` im Hauptverzeichnis).
 - Trage darin deinen API-Schlüssel ein:
   ```env
-  GEMINI_API_KEY=dein_persoenlicher_api_key
+  GROQ_API_KEY=dein_persoenlicher_api_key
   ```
-- *Alternativ:* Eine reine Textdatei `Systemdaten/gemini_api_key.txt` mit dem Key wird als Fallback ebenfalls unterstützt.
+- *Alternativ:* Eine reine Textdatei `Systemdaten/groq_api_key.txt` mit dem Key wird als Fallback ebenfalls unterstützt.
 
 ### 3. Kunden & Rechnungsdaten
 Aus Datenschutzgründen werden **keine echten Rechnungen oder Kundendaten** auf GitHub hochgeladen.

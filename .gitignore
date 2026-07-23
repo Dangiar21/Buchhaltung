@@ -4,8 +4,12 @@ Kunden/*
 
 # Ignoriere sensible API Keys
 Systemdaten/gemini_api_key.txt
+Systemdaten/groq_api_key.txt
 .env
-Systemdaten/gemini_key.env
+*.env
+Systemdaten/*.env
+Systemdaten/*.db
+*.db
 
 # Ignoriere Python Caches
 **/__pycache__/

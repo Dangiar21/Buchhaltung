@@ -78,18 +78,7 @@ def ensure_rule_file(file_path):
         ws_stich.column_dimensions['B'].width = 15
         modified = True
 
-    if "KI-Zuweisungen" not in wb.sheetnames:
-        ws_ki = wb.create_sheet("KI-Zuweisungen")
-        ws_ki.append(["Lieferant ID", "Lieferant Name", "Kunden ID", "Kunden Name", "Beschreibung", "Konto", "Status"])
-        for cell in ws_ki[1]: cell.font = Font(bold=True)
-        ws_ki.column_dimensions['A'].width = 15
-        ws_ki.column_dimensions['B'].width = 25
-        ws_ki.column_dimensions['C'].width = 15
-        ws_ki.column_dimensions['D'].width = 25
-        ws_ki.column_dimensions['E'].width = 40
-        ws_ki.column_dimensions['F'].width = 15
-        ws_ki.column_dimensions['G'].width = 20
-        modified = True
+
 
     # Check and add Data Validations
     dv_formula = "'Kontenplan'!$C$2:$C$1000"
@@ -120,37 +109,7 @@ def ensure_rule_file(file_path):
         dv_stich.add("B2:B1000")
         modified = True
 
-    ws_ki = wb["KI-Zuweisungen"]
-    has_dv_status = any(dv.formula1 == '"AUSSTEHEND,BESTÄTIGT"' for dv in ws_ki.data_validations.dataValidation)
-    has_dv_konto = any(dv.formula1 == dv_formula for dv in ws_ki.data_validations.dataValidation)
-    if not has_dv_status or not has_dv_konto:
-        ws_ki.data_validations.dataValidation = []
-        dv_status = DataValidation(type="list", formula1='"AUSSTEHEND,BESTÄTIGT"', allow_blank=True)
-        dv_status.error = 'Bitte wähle einen gültigen Status!'
-        dv_status.errorTitle = 'Ungültiger Status'
-        ws_ki.add_data_validation(dv_status)
-        dv_status.add("G2:G1000")
-        
-        dv_konto = DataValidation(type="list", formula1=dv_formula, allow_blank=True)
-        dv_konto.error = 'Das eingegebene Konto existiert nicht im Kontenplan!'
-        dv_konto.errorTitle = 'Ungültiges Konto'
-        dv_konto.prompt = 'Bitte ein Konto aus der Dropdown-Liste wählen'
-        dv_konto.promptTitle = 'Konto auswählen'
-        ws_ki.add_data_validation(dv_konto)
-        dv_konto.add("F2:F1000")
-        
-        red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
-        green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
-        ws_ki.conditional_formatting.add('G2:G1000', CellIsRule(operator='equal', formula=['"AUSSTEHEND"'], fill=red_fill))
-        ws_ki.conditional_formatting.add('G2:G1000', CellIsRule(operator='equal', formula=['"BESTÄTIGT"'], fill=green_fill))
-        
-        for col in ['A', 'C']:
-            for row_idx in range(2, 1001):
-                ws_ki[f'{col}{row_idx}'].number_format = '@'
-        for row_idx in range(2, 1001):
-            ws_ki[f'F{row_idx}'].number_format = '0'
-            
-        modified = True
+
 
     if modified:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -161,8 +120,6 @@ def load_rules(global_path, client_path):
     Lädt die Regeln über den DatabaseManager (CQRS). Excel dient als Frontend.
     """
     rules = {
-        "ai_confirmed": {},
-        "ai_pending": {},
         "client_stichwort": {},
         "global_stichwort": {},
         "global_lieferant": {}
@@ -190,7 +147,7 @@ def load_rules(global_path, client_path):
                 for _, row in df_g_lief.iterrows():
                     lief = str(row.iloc[0]).strip().lower()
                     konto_raw = str(row.iloc[1]).strip()
-                    konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    konto = konto_raw.split(' - ')[0].strip() if konto_raw != 'nan' else ''
                     if konto.endswith('.0'): konto = konto[:-2]
                     if lief and lief != 'nan' and konto:
                         rules_list.append({"prioritaet": 3, "lieferant": lief, "konto": konto, "regel_typ": "global_lieferant"})
@@ -198,31 +155,12 @@ def load_rules(global_path, client_path):
                 for _, row in df_g_stich.iterrows():
                     stich = str(row.iloc[0]).strip().lower()
                     konto_raw = str(row.iloc[1]).strip()
-                    konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    konto = konto_raw.split(' - ')[0].strip() if konto_raw != 'nan' else ''
                     if konto.endswith('.0'): konto = konto[:-2]
                     if stich and stich != 'nan' and konto:
                         rules_list.append({"prioritaet": 2, "suchbegriff": stich, "konto": konto, "regel_typ": "global_stichwort"})
                         
-                if "KI-Zuweisungen" in pd.ExcelFile(global_path).sheet_names:
-                    df_g_ki = pd.read_excel(global_path, sheet_name="KI-Zuweisungen")
-                    for _, row in df_g_ki.iterrows():
-                        lief_id = normalize_id(row.get("Lieferant ID", ""))
-                        k_id = normalize_id(row.get("Kunden ID", ""))
-                        desc_raw = row.get("Beschreibung", "")
-                        desc = "" if (pd.isna(desc_raw) or str(desc_raw).strip().lower() == 'nan') else str(desc_raw).strip().upper()
-                        konto_raw = str(row.get("Konto", ""))
-                        konto = "" if (pd.isna(konto_raw) or str(konto_raw).strip().lower() == 'nan') else str(konto_raw).strip().split(' ')[0]
-                        if konto.endswith('.0'): konto = konto[:-2]
-                        status = str(row.get("Status", "")).strip().upper()
-                        
-                        if konto:
-                            is_pending = not (status == "BESTÄTIGT" or status == "OK" or status == "X")
-                            typ = "ai_pending" if is_pending else "ai_confirmed"
-                            rules_list.append({
-                                "prioritaet": 0, "regel_typ": typ, "lieferant_id": lief_id, "suchbegriff": desc, 
-                                "konto": konto, "target_kunden_id": k_id, "status": status
-                            })
-                            
+
                 df_sync = pd.DataFrame(rules_list)
                 db.sync_rules("GLOBAL", "global_rules", df_sync)
                 db.set_sync_status("GLOBAL", "global_rules", global_mtime)
@@ -247,7 +185,7 @@ def load_rules(global_path, client_path):
                 for _, row in df_c_stich.iterrows():
                     stich = str(row.iloc[0]).strip().lower()
                     konto_raw = str(row.iloc[1]).strip()
-                    konto = konto_raw.split(' ')[0] if konto_raw != 'nan' else ''
+                    konto = konto_raw.split(' - ')[0].strip() if konto_raw != 'nan' else ''
                     if konto.endswith('.0'): konto = konto[:-2]
                     if stich and stich != 'nan' and konto:
                         rules_list.append({"prioritaet": 1, "suchbegriff": stich, "konto": konto, "regel_typ": "client_stichwort"})
@@ -269,9 +207,6 @@ def load_rules(global_path, client_path):
                     rules["global_lieferant"][row['lieferant']] = row['konto']
                 elif typ == "global_stichwort":
                     rules["global_stichwort"][row['suchbegriff']] = row['konto']
-                elif typ in ["ai_confirmed", "ai_pending"]:
-                    key = (row.get('lieferant_id', ''), row.get('suchbegriff', ''), row.get('target_kunden_id', ''))
-                    rules[typ][key] = row['konto']
                     
         # Load Client
         if client_id:
@@ -292,15 +227,6 @@ def assign_account(desc_norm, desc, supplier_name, supplier_vat, kunden_id, rule
     supplier_name = str(supplier_name).lower()
     supplier_vat = normalize_id(supplier_vat)
     kunden_id = normalize_id(kunden_id)
-    
-    # 0. Priorität (Allerhöchste): Bestätigte KI-Regel (exakte Übereinstimmung)
-    ai_key = (supplier_vat, desc_norm, kunden_id)
-    if ai_key in rules["ai_confirmed"]:
-        return str(rules["ai_confirmed"][ai_key]), False
-        
-    # 0.5 Priorität: Ausstehende KI-Regel
-    if ai_key in rules["ai_pending"]:
-        return str(rules["ai_pending"][ai_key]), True
     
     # 1. Priorität: Kunden-Stichwort-Regel
     for stich, konto in rules["client_stichwort"].items():

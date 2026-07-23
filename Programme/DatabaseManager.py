@@ -38,9 +38,14 @@ class DatabaseManager:
                     supplier TEXT NOT NULL,
                     description TEXT NOT NULL,
                     result_json TEXT NOT NULL,
+                    confirmed INTEGER DEFAULT 0,
                     UNIQUE(kunden_id, supplier, description)
                 )
             ''')
+            try:
+                cursor.execute('ALTER TABLE cache_analyse ADD COLUMN confirmed INTEGER DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass
             
             # Cache Konten (FIBU)
             cursor.execute('''
@@ -50,9 +55,14 @@ class DatabaseManager:
                     supplier TEXT NOT NULL,
                     description TEXT NOT NULL,
                     konto TEXT NOT NULL,
+                    confirmed INTEGER DEFAULT 0,
                     UNIQUE(kunden_id, supplier, description)
                 )
             ''')
+            try:
+                cursor.execute('ALTER TABLE cache_konten ADD COLUMN confirmed INTEGER DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass
             
             # Kontenregeln (Hybrid from Excel)
             cursor.execute('''
@@ -69,6 +79,9 @@ class DatabaseManager:
                     beschreibung TEXT
                 )
             ''')
+            
+            # Legacy KI-Zuweisungen aus der Datenbank löschen (werden jetzt nur noch über den Cache gesteuert)
+            cursor.execute("DELETE FROM kontenregeln WHERE regel_typ IN ('ai_pending', 'ai_confirmed')")
             
             # Sync Status (Meta-Tabelle)
             cursor.execute('''
@@ -104,12 +117,28 @@ class DatabaseManager:
                 memory[cache_key] = result_json
         return memory
 
+    def get_analyse_cache_full(self, kunden_id: str) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT supplier, description, result_json, confirmed FROM cache_analyse WHERE kunden_id = ?', (kunden_id,))
+            rows = cursor.fetchall()
+            
+        memory = {}
+        for supplier, desc, result_json, confirmed in rows:
+            cache_key = f"{supplier} | {desc}".strip().upper()
+            try:
+                val = json.loads(result_json)
+            except Exception as e:
+                val = result_json
+            memory[cache_key] = {'value': val, 'confirmed': bool(confirmed)}
+        return memory
+
     def save_analyse_cache_batch(self, kunden_id: str, new_entries: Dict[str, Any]):
         if not new_entries:
             return
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            for cache_key, result in new_entries.items():
+            for cache_key, data in new_entries.items():
                 if " | " in cache_key:
                     parts = cache_key.split(" | ", 1)
                     supplier = parts[0]
@@ -118,14 +147,23 @@ class DatabaseManager:
                     supplier = cache_key
                     desc = ""
                     
+                if isinstance(data, dict) and 'value' in data and 'confirmed' in data:
+                    result = data['value']
+                    confirmed = 1 if data['confirmed'] else 0
+                else:
+                    result = data
+                    confirmed = 0
+                    
                 result_json = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
                 
                 # Upsert
                 cursor.execute('''
-                    INSERT INTO cache_analyse (kunden_id, supplier, description, result_json)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(kunden_id, supplier, description) DO UPDATE SET result_json = excluded.result_json
-                ''', (kunden_id, supplier, desc, result_json))
+                    INSERT INTO cache_analyse (kunden_id, supplier, description, result_json, confirmed)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(kunden_id, supplier, description) DO UPDATE SET 
+                    result_json = excluded.result_json,
+                    confirmed = excluded.confirmed
+                ''', (kunden_id, supplier, desc, result_json, confirmed))
             conn.commit()
             
     # --- Cache Konten ---
@@ -141,12 +179,24 @@ class DatabaseManager:
             memory[cache_key] = konto
         return memory
 
-    def save_konten_cache_batch(self, kunden_id: str, new_entries: Dict[str, str]):
+    def get_konten_cache_full(self, kunden_id: str) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT supplier, description, konto, confirmed FROM cache_konten WHERE kunden_id = ?', (kunden_id,))
+            rows = cursor.fetchall()
+            
+        memory = {}
+        for supplier, desc, konto, confirmed in rows:
+            cache_key = f"{supplier} | {desc}".strip().upper()
+            memory[cache_key] = {'value': konto, 'confirmed': bool(confirmed)}
+        return memory
+
+    def save_konten_cache_batch(self, kunden_id: str, new_entries: Dict[str, Any]):
         if not new_entries:
             return
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            for cache_key, konto in new_entries.items():
+            for cache_key, data in new_entries.items():
                 if " | " in cache_key:
                     parts = cache_key.split(" | ", 1)
                     supplier = parts[0]
@@ -155,12 +205,21 @@ class DatabaseManager:
                     supplier = cache_key
                     desc = ""
                     
+                if isinstance(data, dict) and 'value' in data and 'confirmed' in data:
+                    konto = data['value']
+                    confirmed = 1 if data['confirmed'] else 0
+                else:
+                    konto = data
+                    confirmed = 0
+                    
                 # Upsert
                 cursor.execute('''
-                    INSERT INTO cache_konten (kunden_id, supplier, description, konto)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(kunden_id, supplier, description) DO UPDATE SET konto = excluded.konto
-                ''', (kunden_id, supplier, desc, konto))
+                    INSERT INTO cache_konten (kunden_id, supplier, description, konto, confirmed)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(kunden_id, supplier, description) DO UPDATE SET 
+                    konto = excluded.konto,
+                    confirmed = excluded.confirmed
+                ''', (kunden_id, supplier, desc, konto, confirmed))
             conn.commit()
 
     # --- Sync Status ---
@@ -198,6 +257,13 @@ class DatabaseManager:
             return pd.read_sql_query('SELECT * FROM kontenregeln WHERE kunden_id = ?', conn, params=(kunden_id,))
 
     # --- UI Cache Editor Helpers ---
+    def delete_all_cache(self, cache_type: str, kunden_id: str):
+        table = "cache_analyse" if cache_type == "Sektorenanalyse" else "cache_konten"
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'DELETE FROM {table} WHERE kunden_id = ?', (kunden_id,))
+            conn.commit()
+
     def delete_cache_entry(self, cache_type: str, kunden_id: str, cache_key: str):
         if " | " in cache_key:
             parts = cache_key.split(" | ", 1)

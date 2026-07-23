@@ -60,7 +60,7 @@ def load_setup(nutzerdaten_dir):
         print(f"Fehler beim Laden von Analyse_Setup.xlsx: {e}")
         return []
 
-def build_system_instruction(kategorien):
+def build_system_instruction(kategorien, is_stage2=False):
     """Baut den KI-Prompt basierend auf den geladenen Kategorien."""
     if not kategorien:
         return "Du bist ein Buchhaltungs-Assistent. Keine Kategorien definiert."
@@ -69,8 +69,7 @@ def build_system_instruction(kategorien):
     prompt += "WICHTIG: Erfinde KEINE eigenen Kategorien. Nutze 'Sonstiges' oder 'Unbekannt', wenn etwas nicht zuordnenbar ist.\n\n"
     prompt += "Hier sind die Kategorien und Regeln:\n\n"
     
-    json_structure = {}
-    
+    kategorien_dict = {}
     for kat in kategorien:
         prompt += f"--- {kat['name']} ---\n"
         if kat['regel']:
@@ -78,15 +77,29 @@ def build_system_instruction(kategorien):
         if kat['beispiele']:
             prompt += f"Beispiele: {kat['beispiele']}\n"
         prompt += "\n"
-        
-        json_structure[kat['name']] = "Dein_Ergebnis_Hier"
+        kategorien_dict[kat['name']] = "Dein_Ergebnis_Hier"
         
     prompt += "Du erhältst eine Liste von Artikeln im Format: [ID] Lieferant | Beschreibung\n"
     prompt += "Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt. Die Schlüssel auf der obersten Ebene sind die IDs (als String).\n"
-    prompt += "Der Wert für jede ID ist ein Objekt mit den Kategorien als Schlüssel.\n"
     
     import json
-    beispiel_antwort = {"0": json_structure}
+    if not is_stage2:
+        prompt += "Der Wert für jede ID MUSS ein JSON-Objekt mit exakt diesen 3 Schlüsseln sein: 'gedankengang', 'konfidenz', 'konto' (bzw. kategorien_werte).\n"
+        prompt += "'gedankengang' ist ein Satz, 'konfidenz' ist eine Zahl 1-10.\n"
+        prompt += "'konto' (wir nennen es intern kategorien_werte) ist ein JSON-Objekt mit den Kategorien als Schlüssel.\n"
+        
+        beispiel_antwort = {
+            "0": {
+                "gedankengang": "Erklaerung hier",
+                "konfidenz": 9,
+                "konto": kategorien_dict
+            }
+        }
+    else:
+        prompt += "Der Wert für jede ID ist direkt ein Objekt mit den Kategorien als Schlüssel.\n"
+        prompt += "Du MUSST dich zwingend für jede Kategorie entscheiden. Lass den Wert NIEMALS leer, auch wenn du unsicher bist.\n"
+        beispiel_antwort = {"0": kategorien_dict}
+        
     prompt += f"\nBeispiel-Antwort:\n{json.dumps(beispiel_antwort, indent=2)}"
     
     return prompt

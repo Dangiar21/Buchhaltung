@@ -22,53 +22,8 @@ def ask_shorten_desc_local_fallback():
     # Wird nun über utils.py importiert.
     pass
 
-def save_ai_assignments_to_excel(global_rules_path, new_assignments):
-    if not new_assignments:
-        return
-    
-    try:
-        from openpyxl import load_workbook
-        wb = load_workbook(global_rules_path)
-        
-        if "KI-Zuweisungen" not in wb.sheetnames:
-            print("Blatt 'KI-Zuweisungen' nicht gefunden. Speichern übersprungen.")
-            return
-            
-        ws = wb["KI-Zuweisungen"]
-        
-        start_row = ws.max_row + 1
-            
-        for assignment in new_assignments:
-            lief_id = assignment['Lieferant ID']
-            kunden_id = assignment['Kunden ID']
-            konto = int(assignment['Konto']) if str(assignment['Konto']).isdigit() else assignment['Konto']
-            
-            ws.cell(row=start_row, column=1, value=lief_id)
-            ws.cell(row=start_row, column=2, value=assignment['Lieferant Name'])
-            ws.cell(row=start_row, column=3, value=kunden_id)
-            ws.cell(row=start_row, column=4, value=assignment['Kunden Name'])
-            ws.cell(row=start_row, column=5, value=assignment['Beschreibung'])
-            ws.cell(row=start_row, column=6, value=konto)
-            ws.cell(row=start_row, column=7, value=assignment['Status'])
-            start_row += 1
-            
-        while True:
-            try:
-                wb.save(global_rules_path)
-                print(f"\n=> {len(new_assignments)} neue KI-Zuweisungen in {os.path.basename(global_rules_path)} gespeichert!")
-                break
-            except PermissionError:
-                print("\n" + "="*60)
-                print("FEHLER BEIM SPEICHERN DER KI-REGELN!")
-                print(f"Die Datei {os.path.basename(global_rules_path)} ist in Excel geöffnet.")
-                print("Bitte schließe die Datei in Excel und drücke ENTER, um es erneut zu versuchen.")
-                print("="*60 + "\n")
-                input("Drücke Enter, sobald die Datei geschlossen ist...")
-                
-    except Exception as e:
-        print(f"Fehler beim Anhängen der KI-Zuweisungen: {e}")
-
-def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True, client_vat_id=""):
+def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True, client_vat_id="", db_konten_cache=None):
+    if db_konten_cache is None: db_konten_cache = {}
     print(f"Lese: {xml_path}")
     rechnungspositionen = []
     
@@ -149,6 +104,10 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             total = safe_float(total_text, 0.0, faktor)
             iva = safe_float(iva_text, 0.0)
             
+            # Überspringe reine Informationszeilen (Gesamtpreis == 0)
+            if total == 0.0:
+                continue
+            
             # Extrahiere Targa (Kennzeichen)
             targa_gefunden = ""
             fahrzeugtyp = ""
@@ -176,7 +135,12 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             hyperlink_formel = f'=HYPERLINK("{abs_path}", "{dateiname}")'
 
             # Konto ermitteln
-            conto, is_pending = Buchung_Regeln.assign_account(desc_norm, desc_short, lieferant, liefer_id, kunden_id, rules_dict)
+            cache_key = f"{lieferant} | {desc_short}".strip().upper()
+            if cache_key in db_konten_cache:
+                conto = str(db_konten_cache[cache_key]['value'])
+                is_pending = not db_konten_cache[cache_key]['confirmed']
+            else:
+                conto, is_pending = Buchung_Regeln.assign_account(desc_norm, desc_short, lieferant, liefer_id, kunden_id, rules_dict)
             
             aktiv_passiv = ""
             if client_vat_id:
@@ -265,101 +229,32 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     except Exception as e:
                         print(f"Fehler beim Lesen von info.json: {e}")
             
+            # Lade den DB Cache für den Kunden, um UI-Bestätigungen zu berücksichtigen
+            kunden_id_ordner = os.path.basename(os.path.dirname(nutzerdaten_dir)) if nutzerdaten_dir else "Unbekannt"
+            try:
+                from DatabaseManager import get_db
+                db = get_db()
+                db_konten_cache = db.get_konten_cache_full(kunden_id_ordner)
+            except Exception:
+                db_konten_cache = {}
+            
             shorten_description = ask_shorten_desc()
 
-            pdf_paths = []
             for pfad in paths:
                 if os.path.isfile(pfad):
                     lower_pfad = pfad.lower()
                     if lower_pfad.endswith('.xml') or lower_pfad.endswith('.p7m'):
-                        alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id))
-                    elif lower_pfad.endswith('.pdf'):
-                        pdf_paths.append(pfad)
+                        alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache))
                 elif os.path.isdir(pfad):
                     print(f"\nDurchsuche Ordner (inkl. Unterordner): {pfad}")
                     for root_dir, _, files in os.walk(pfad):
                         for filename in files:
                             lower_file = filename.lower()
                             if lower_file.endswith('.xml') or lower_file.endswith('.p7m'):
-                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id))
-                            elif lower_file.endswith('.pdf'):
-                                pdf_paths.append(os.path.join(root_dir, filename))
+                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache))
                 else:
-                    print(f"Überspringe: {pfad} (Keine XML/P7M/PDF oder Ordner)")
+                    print(f"Überspringe: {pfad} (Keine XML/P7M oder Ordner)")
                     
-            if pdf_paths:
-                import Buchung_KI
-                import PDF_Parser
-                api_key = Buchung_KI.get_api_key(base_dir)
-                if not api_key:
-                    print("\nWarnung: Kein Gemini API Key gefunden. PDFs können nicht verarbeitet werden.")
-                else:
-                    print(f"\nVerarbeite {len(pdf_paths)} PDF-Rechnungen mit Gemini OCR...")
-                    pdf_results = PDF_Parser.parse_pdfs(pdf_paths, api_key)
-                    
-                    for p_path, items in pdf_results.items():
-                        if not items:
-                            fehler_log.append(f"{os.path.basename(p_path)}: Konnte nicht per OCR ausgelesen werden.")
-                            continue
-                            
-                        abs_path = os.path.abspath(p_path)
-                        dateiname = os.path.basename(p_path)
-                        hyperlink_formel = f'=HYPERLINK("{abs_path}", "{dateiname}")'
-                        
-                        for pos in items:
-                            typ = pos.get('Typ', 'Rechnung')
-                            faktor = -1.0 if 'gutschrift' in typ.lower() else 1.0
-                            
-                            desc = pos.get('Beschreibung', 'Keine Beschreibung')
-                            desc_short = desc.split(',', 1)[0].strip() if (',' in desc and shorten_description) else desc
-                            desc_norm = re.sub(r'\s+', ' ', desc_short).strip().upper()
-                            
-                            lieferant = pos.get('Lieferant', 'Unbekannter Lieferant')
-                            liefer_id = str(pos.get('Liefer ID', '')).strip().replace(' ', '')
-                            kunde = pos.get('Kunde', 'Unbekannter Kunde')
-                            kunden_id = str(pos.get('Kunden ID', '')).strip().replace(' ', '')
-                            
-                            targa_gefunden = str(pos.get('Kennzeichen', '')).strip().upper().replace(' ', '')
-                            fahrzeugtyp = ""
-                            if targa_gefunden:
-                                fahrzeugtyp = targa_dict.get(targa_gefunden, "UNBEKANNT")
-                                if targa_gefunden not in targa_dict and targa_gefunden not in neue_targas_set:
-                                    neue_targas_set.add(targa_gefunden)
-                                    
-                            conto, is_pending = Buchung_Regeln.assign_account(desc_norm, desc_short, lieferant, liefer_id, kunden_id, rules_dict)
-                            
-                            qty = safe_float(pos.get('Menge', 1.0), 1.0, faktor)
-                            price = safe_float(pos.get('Einzelpreis', 0.0), 0.0)
-                            
-                            aktiv_passiv = ""
-                            if client_vat_id:
-                                if liefer_id == client_vat_id:
-                                    aktiv_passiv = "Attiva"
-                                elif kunden_id == client_vat_id:
-                                    aktiv_passiv = "Passiva"
-                            
-                            alle_positionen.append({
-                                'Aktiv/Passiv': aktiv_passiv,
-                                'Typ': typ,
-                                'Rechnungsnummer': pos.get('Rechnungsnummer', ''),
-                                'Datum': pos.get('Datum', ''),
-                                'Lieferant': lieferant,
-                                'Liefer ID': liefer_id,
-                                'Kunde': kunde,
-                                'Kunden ID': kunden_id,
-                                'Beschreibung': desc_short,
-                                'Conto': conto,
-                                'is_pending': is_pending,
-                                'CdC': targa_gefunden,
-                                'Kennzeichen': targa_gefunden,
-                                'Fahrzeugtyp': fahrzeugtyp,
-                                'Menge': qty,
-                                f'Einzelpreis ({pos.get("Waehrung", "EUR")})': price,
-                                'Gesamtpreis': safe_float(pos.get('Gesamtpreis', 0.0), 0.0, faktor),
-                                'MwSt Satz': safe_float(pos.get('MwSt_Satz', 0.0), 0.0),
-                                'Dateiname': hyperlink_formel
-                            })
-            
             
             if alle_positionen:
                 # --- KI Fallback ---
@@ -393,30 +288,13 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     total_dups = sum(len(u['indices']) for u in unique_unknowns.values())
                     print(f"\nSende {len(items_to_send)} eindeutige unbekannte Artikel an die KI (Dedupliziert von {total_dups} Positionen)...")
                     ai_results = Buchung_KI.ask_gemini_batch(items_to_send, api_key, nutzerdaten_dir)
-                    
-                    new_ai_assignments = []
-                    
                     for key, data in unique_unknowns.items():
                         unique_id = data['item']['id']
                         if unique_id in ai_results:
                             konto = ai_results[unique_id]
-                            
-                            new_ai_assignments.append({
-                                'Lieferant ID': key[0],
-                                'Lieferant Name': data['item'].get('Lieferant', ''),
-                                'Kunden ID': key[2],
-                                'Kunden Name': data['item'].get('Kunde', ''),
-                                'Beschreibung': key[1],
-                                'Konto': konto,
-                                'Status': 'AUSSTEHEND'
-                            })
-                            
                             for original_i in data['indices']:
                                 alle_positionen[original_i]['Conto'] = konto
-                                ai_indices.append(original_i + 2) # +2 weil Excel bei 1 startet und Zeile 1 der Header ist
-                                
-                    if new_ai_assignments:
-                        save_ai_assignments_to_excel(global_rules_path, new_ai_assignments)
+                                ai_indices.append(original_i + 2)
 
                 # Generelle Konvertierung aller als String gespeicherten Nummern zu Integer
                 for pos in alle_positionen:

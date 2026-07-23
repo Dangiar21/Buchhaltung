@@ -10,7 +10,6 @@ import queue
 # Modulpfade hinzufügen, damit die Unterordner erkannt werden
 script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
 sys.path.append(os.path.join(script_dir, 'Programme', 'Buchungen erstellen'))
-sys.path.append(os.path.join(script_dir, 'Programme', 'XML Preview'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'XML zu Excel'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'Analyse erstellen'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'KI_Training'))
@@ -36,11 +35,6 @@ except ImportError as e:
     run_analyse = None
     Analyse_Config = None
 
-try:
-    from XMLPreviewGUI import XMLPreviewFrame
-except ImportError as e:
-    print("Fehler beim Import von XMLPreviewGUI:", e)
-    XMLPreviewFrame = None
 
 try:
     from Cache_Editor import CacheEditorFrame
@@ -78,7 +72,6 @@ class RedirectText(io.StringIO):
 
 TRANSLATIONS = {
     'DE': {
-        'btn_xml_preview': 'XML Preview',
         'btn_xml_to_excel': 'XML zu Excel',
         'btn_buchung_erstellen': 'Buchung erstellen',
         'btn_analyse': 'Analyse erstellen',
@@ -89,7 +82,6 @@ TRANSLATIONS = {
         'switch_dark': 'Dark Mode'
     },
     'IT': {
-        'btn_xml_preview': 'Anteprima XML',
         'btn_xml_to_excel': 'XML a Excel',
         'btn_buchung_erstellen': 'Crea Registrazioni',
         'btn_analyse': 'Crea Analisi',
@@ -140,23 +132,20 @@ class BuchhaltungApp(TkDnD):
         self.btn_edit_client = ctk.CTkButton(self.client_frame, text="Kunde bearbeiten", command=self.open_edit_client_dialog, fg_color="#e58e26", hover_color="#b36916")
         self.btn_edit_client.pack(fill="x", pady=(5, 0))
 
-        self.sidebar_btn_1 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_preview'], command=self.show_xml_preview, text_color=("black", "white"))
-        self.sidebar_btn_1.grid(row=2, column=0, padx=20, pady=10)
-
         self.sidebar_btn_2 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_to_excel'], command=self.show_xml_to_excel, text_color=("black", "white"))
-        self.sidebar_btn_2.grid(row=3, column=0, padx=20, pady=10)
+        self.sidebar_btn_2.grid(row=2, column=0, padx=20, pady=10)
 
         self.sidebar_btn_3 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_buchung_erstellen'], command=self.show_buchung_erstellen, text_color=("black", "white"))
-        self.sidebar_btn_3.grid(row=4, column=0, padx=20, pady=10)
+        self.sidebar_btn_3.grid(row=3, column=0, padx=20, pady=10)
         
         self.sidebar_btn_4 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_analyse'], command=self.show_analyse, text_color=("black", "white"))
-        self.sidebar_btn_4.grid(row=5, column=0, padx=20, pady=10)
+        self.sidebar_btn_4.grid(row=4, column=0, padx=20, pady=10)
 
         self.sidebar_btn_5 = ctk.CTkButton(self.sidebar_frame, text="KI-Training (Cache)", command=self.show_cache_editor, text_color=("black", "white"))
-        self.sidebar_btn_5.grid(row=6, column=0, padx=20, pady=10)
+        self.sidebar_btn_5.grid(row=5, column=0, padx=20, pady=10)
 
         self.appearance_mode_switch = ctk.CTkSwitch(self.sidebar_frame, text=TRANSLATIONS[self.lang]['switch_dark'], command=self.toggle_appearance_mode)
-        self.appearance_mode_switch.grid(row=7, column=0, padx=20, pady=(20, 10), sticky="s")
+        self.appearance_mode_switch.grid(row=6, column=0, padx=20, pady=(20, 10), sticky="s")
         
         self.lang_switch = ctk.CTkSegmentedButton(self.sidebar_frame, values=["DE", "IT"], command=self.change_language)
         self.lang_switch.set("DE")
@@ -169,7 +158,6 @@ class BuchhaltungApp(TkDnD):
         self.container.grid_rowconfigure(0, weight=1)
 
         # --- Frames ---
-        self.build_xml_preview_frame()
         self.build_xml_to_excel_frame()
         self.build_buchung_erstellen_frame()
         self.build_analyse_frame()
@@ -190,7 +178,7 @@ class BuchhaltungApp(TkDnD):
         self.process_print_queue()
         
         # Startansicht
-        self.show_xml_preview()
+        self.show_buchung_erstellen()
 
     def process_print_queue(self):
         while not self.print_queue.empty():
@@ -230,6 +218,10 @@ class BuchhaltungApp(TkDnD):
         
         self.btn_folder = ctk.CTkButton(self.btn_frame, text=TRANSLATIONS[self.lang]['btn_folder'], command=self.select_folder)
         self.btn_folder.grid(row=0, column=1, padx=10)
+        
+        self.btn_cancel_buchung = ctk.CTkButton(self.btn_frame, text="Abbrechen & Speichern", command=self.cancel_task, fg_color="red", hover_color="darkred")
+        self.btn_cancel_buchung.grid(row=0, column=2, padx=10)
+        self.btn_cancel_buchung.grid_remove() # Hide initially
 
         # Log Area
         self.log_textbox = ctk.CTkTextbox(self.buchung_erstellen_frame, height=200)
@@ -240,14 +232,7 @@ class BuchhaltungApp(TkDnD):
         self.drop_frame.drop_target_register(DND_FILES)
         self.drop_frame.dnd_bind('<<Drop>>', self.drop_event)
         
-    def build_xml_preview_frame(self):
-        if XMLPreviewFrame:
-            self.xml_preview_frame = XMLPreviewFrame(self.container, fg_color="transparent")
-            self.xml_preview_frame.grid(row=0, column=0, sticky="nsew")
-        else:
-            self.xml_preview_frame = ctk.CTkFrame(self.container)
-            self.xml_preview_frame.grid(row=0, column=0, sticky="nsew")
-            ctk.CTkLabel(self.xml_preview_frame, text="Fehler: XMLPreviewGUI.py nicht gefunden").pack(expand=True)
+
 
     def build_xml_to_excel_frame(self):
         self.xml_to_excel_frame = ctk.CTkFrame(self.container, fg_color="transparent")
@@ -314,6 +299,10 @@ class BuchhaltungApp(TkDnD):
         
         self.analyse_btn_setup = ctk.CTkButton(self.analyse_btn_frame, text="Kategorien-Setup öffnen", command=self.open_analyse_setup, fg_color="#c85a17", hover_color="#a84b13")
         self.analyse_btn_setup.grid(row=0, column=2, padx=10)
+        
+        self.btn_cancel_analyse = ctk.CTkButton(self.analyse_btn_frame, text="Abbrechen & Speichern", command=self.cancel_task, fg_color="red", hover_color="darkred")
+        self.btn_cancel_analyse.grid(row=0, column=3, padx=10)
+        self.btn_cancel_analyse.grid_remove() # Hide initially
 
         # Log Area
         self.analyse_log_textbox = ctk.CTkTextbox(self.analyse_frame, height=200)
@@ -367,27 +356,16 @@ class BuchhaltungApp(TkDnD):
             self.cache_editor_frame.load_data()
 
     def hide_all_frames(self):
-        self.xml_preview_frame.grid_remove()
         self.xml_to_excel_frame.grid_remove()
         self.buchung_erstellen_frame.grid_remove()
         self.analyse_frame.grid_remove()
         self.cache_editor_frame.grid_remove()
         
     def reset_sidebar_buttons(self):
-        self.sidebar_btn_1.configure(fg_color="transparent")
         self.sidebar_btn_2.configure(fg_color="transparent")
         self.sidebar_btn_3.configure(fg_color="transparent")
         self.sidebar_btn_4.configure(fg_color="transparent")
         self.sidebar_btn_5.configure(fg_color="transparent")
-
-    def show_xml_preview(self):
-        self.active_tool = 'xml_preview'
-        self.hide_all_frames()
-        self.xml_preview_frame.grid()
-        self.reset_sidebar_buttons()
-        self.sidebar_btn_1.configure(fg_color=("gray75", "gray25"))
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
 
     def show_xml_to_excel(self):
         self.active_tool = 'xml_to_excel'
@@ -422,7 +400,6 @@ class BuchhaltungApp(TkDnD):
     def change_language(self, choice):
         self.lang = choice
         t = TRANSLATIONS[self.lang]
-        self.sidebar_btn_1.configure(text=t['btn_xml_preview'])
         self.sidebar_btn_2.configure(text=t['btn_xml_to_excel'])
         self.sidebar_btn_3.configure(text=t['btn_buchung_erstellen'])
         self.sidebar_btn_4.configure(text=t['btn_analyse'])
@@ -442,9 +419,6 @@ class BuchhaltungApp(TkDnD):
         self.xml2ex_log_textbox.configure(state="disabled")
         
         print(t['welcome_msg'])
-        
-        if hasattr(self, 'xml_preview_frame') and self.xml_preview_frame is not None and hasattr(self.xml_preview_frame, 'set_language'):
-            self.xml_preview_frame.set_language(self.lang)
 
 
     def toggle_appearance_mode(self):
@@ -520,12 +494,59 @@ class BuchhaltungApp(TkDnD):
             else:
                 print("Fehler: Analyse_Main.py konnte nicht importiert werden.")
 
+    def cancel_task(self):
+        print("\n[!] Abbruch angefordert! Die aktuelle Verarbeitung wird nach dem laufenden Batch beendet und gespeichert.")
+        try:
+            import Buchung_KI
+            Buchung_KI.cancel_requested = True
+        except ImportError:
+            pass
+        try:
+            import Analyse_KI
+            Analyse_KI.cancel_requested = True
+        except ImportError:
+            pass
+
     def run_task(self, paths, output_dir, nutzerdaten_dir, func):
         try:
+            # Reset flags
+            try:
+                import Buchung_KI
+                Buchung_KI.cancel_requested = False
+            except ImportError:
+                pass
+            try:
+                import Analyse_KI
+                Analyse_KI.cancel_requested = False
+            except ImportError:
+                pass
+                
+            # Show buttons
+            if self.active_tool == 'buchung_erstellen':
+                self.btn_cancel_buchung.grid()
+            elif self.active_tool == 'analyse':
+                self.btn_cancel_analyse.grid()
+
             func(paths, output_dir=output_dir, nutzerdaten_dir=nutzerdaten_dir)
-            print("\n✅ Verarbeitung abgeschlossen.")
+            
+            try:
+                import Buchung_KI
+                import Analyse_KI
+                if getattr(Buchung_KI, 'cancel_requested', False) or getattr(Analyse_KI, 'cancel_requested', False):
+                    print("\n⚠️ Verarbeitung wurde vorzeitig abgebrochen. Die bisherigen Ergebnisse wurden gespeichert.")
+                else:
+                    print("\n✅ Verarbeitung abgeschlossen.")
+            except ImportError:
+                print("\n✅ Verarbeitung abgeschlossen.")
+                
         except Exception as e:
             print(f"\n❌ Ein unerwarteter Fehler ist aufgetreten: {e}")
+        finally:
+            # Hide buttons
+            if self.active_tool == 'buchung_erstellen':
+                self.btn_cancel_buchung.grid_remove()
+            elif self.active_tool == 'analyse':
+                self.btn_cancel_analyse.grid_remove()
 
     def refresh_clients(self):
         self.all_clients = []
@@ -620,15 +641,7 @@ class BuchhaltungApp(TkDnD):
             except Exception as e:
                 print(f"Fehler beim Speichern des letzten Kunden: {e}")
             
-            # Optional: Dem Preview-Fenster mitteilen, dass der Kunde gewechselt wurde
-            # falls wir das Preview auf den Kundenordner filtern möchten
-            client_dir = os.path.join(self.base_kunden_dir, self.current_client)
-            if hasattr(self, 'xml_preview_frame') and self.xml_preview_frame:
-                rechnungen_dir = os.path.join(client_dir, "Rechnungen")
-                if os.path.exists(rechnungen_dir) and hasattr(self.xml_preview_frame, 'load_directory'):
-                    # Load directory async to not block GUI
-                    self.xml_preview_frame.current_folder = rechnungen_dir
-                    self.xml_preview_frame.after(100, lambda: self.xml_preview_frame.load_directory(rechnungen_dir))
+
         else:
             self.current_client = None
 
