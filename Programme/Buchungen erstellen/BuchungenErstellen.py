@@ -55,7 +55,8 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             'Kunde': item['Kunde'],
             'Kunden ID': item['Kunden ID'],
             'Beschreibung': item['Beschreibung'],
-            'Conto': conto,
+            'Unterkonto': conto,
+            'Hauptkonto': '',
             'is_pending': is_pending,
             'CdC': item['CdC'],
             'Kennzeichen': item['Kennzeichen'],
@@ -63,8 +64,7 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             'Menge': item['Menge'],
             f'Einzelpreis ({waehrung})': item['Einzelpreis_Roh'],
             f'Gesamtpreis ({waehrung})': item['Gesamtpreis_Roh'],
-            'MwSt (%)': item['MwSt'],
-            'Datei': item['Datei_Link']
+            'MwSt (%)': item['MwSt']
         })
         
     return rechnungspositionen
@@ -130,20 +130,27 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
             
             shorten_description = ask_shorten_desc()
 
+            xml_files_to_process = []
             for pfad in paths:
                 if os.path.isfile(pfad):
                     lower_pfad = pfad.lower()
                     if lower_pfad.endswith('.xml') or lower_pfad.endswith('.p7m'):
-                        alle_positionen.extend(parse_xml_to_list(pfad, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache))
+                        xml_files_to_process.append(pfad)
                 elif os.path.isdir(pfad):
                     print(f"\nDurchsuche Ordner (inkl. Unterordner): {pfad}")
                     for root_dir, _, files in os.walk(pfad):
                         for filename in files:
                             lower_file = filename.lower()
                             if lower_file.endswith('.xml') or lower_file.endswith('.p7m'):
-                                alle_positionen.extend(parse_xml_to_list(os.path.join(root_dir, filename), targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache))
+                                xml_files_to_process.append(os.path.join(root_dir, filename))
                 else:
                     print(f"Überspringe: {pfad} (Keine XML/P7M oder Ordner)")
+                    
+            total_files = len(xml_files_to_process)
+            for i, xml_file in enumerate(xml_files_to_process):
+                alle_positionen.extend(parse_xml_to_list(xml_file, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache))
+                percent = int(((i + 1) / total_files) * 20) if total_files > 0 else 20
+                print(f"[PROGRESS:{percent}]")
                     
             
             if alle_positionen:
@@ -157,11 +164,11 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     if pos.pop('is_pending', False):
                         ai_indices.append(i + 2)
                         
-                    if pos.get('Conto') == '???':
+                    if pos.get('Unterkonto') == '???':
                         desc_norm = re.sub(r'\s+', ' ', pos.get('Beschreibung', '')).strip().upper()
                         key = (pos.get('Liefer ID', ''), desc_norm, pos.get('Kunden ID', ''))
                         if key not in unique_unknowns:
-                            excluded_keys = {'Typ', 'Liefer ID', 'Kunden ID', 'Menge', 'MwSt Satz', 'Dateiname', 'Conto', 'is_pending'}
+                            excluded_keys = {'Typ', 'Liefer ID', 'Kunden ID', 'Menge', 'MwSt Satz', 'Dateiname', 'Unterkonto', 'Hauptkonto', 'is_pending'}
                             item_data = {'id': str(len(unique_unknowns))}
                             for k, v in pos.items():
                                 if k not in excluded_keys and not str(k).startswith('Einzelpreis') and not str(k).startswith('Gesamtpreis'):
@@ -183,14 +190,22 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         if unique_id in ai_results:
                             konto = ai_results[unique_id]
                             for original_i in data['indices']:
-                                alle_positionen[original_i]['Conto'] = konto
+                                alle_positionen[original_i]['Unterkonto'] = konto
                                 ai_indices.append(original_i + 2)
 
-                # Generelle Konvertierung aller als String gespeicherten Nummern zu Integer
+                # Generelle Konvertierung und Hauptkonto-Ableitung
                 for pos in alle_positionen:
-                    c = pos.get('Conto')
-                    if isinstance(c, str) and c.isdigit():
-                        pos['Conto'] = int(c)
+                    c = pos.get('Unterkonto')
+                    if isinstance(c, str):
+                        hauptkonto = c.split('_')[0]
+                        pos['Hauptkonto'] = hauptkonto
+                        
+                        if c.isdigit():
+                            pos['Unterkonto'] = int(c)
+                        if hauptkonto.isdigit():
+                            pos['Hauptkonto'] = int(hauptkonto)
+                    else:
+                        pos['Hauptkonto'] = c
 
                 print(f"\nErstelle Excel-Datei mit {len(alle_positionen)} Positionen...")
                 df = pd.DataFrame(alle_positionen)
@@ -231,12 +246,6 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         try:
                             if cell.value:
                                 val_str = str(cell.value)
-                                # Bei Hyperlink-Formeln den angezeigten Text für die Länge verwenden
-                                if val_str.startswith('=HYPERLINK'):
-                                    parts = val_str.split('", "')
-                                    if len(parts) > 1:
-                                        val_str = parts[1].replace('")', '').strip()
-                                
                                 length = len(val_str)
                                 if length > max_length:
                                     max_length = length
@@ -257,14 +266,12 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 einzelpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Einzelpreis')), None)
                 gesamtpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Gesamtpreis')), None)
                 mwst_col = col_indices.get('MwSt (%)')
-                datei_col = col_indices.get('Datei')
 
                 euro_format = '#,##0.00 €'
                 percent_format = '0.00%'
                 from openpyxl.styles import Font
-                link_font = Font(color="0563C1", underline="single")
                 red_font = Font(color="FF0000", bold=True)
-                conto_col = col_indices.get('Conto')
+                conto_col = col_indices.get('Unterkonto')
                 
                 for row in range(2, worksheet.max_row + 1):
                     if einzelpreis_col:
@@ -273,8 +280,6 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         worksheet.cell(row=row, column=gesamtpreis_col).number_format = euro_format
                     if mwst_col:
                         worksheet.cell(row=row, column=mwst_col).number_format = percent_format
-                    if datei_col:
-                        worksheet.cell(row=row, column=datei_col).font = link_font
                     
                     if conto_col and row in ai_indices:
                         worksheet.cell(row=row, column=conto_col).font = red_font
@@ -282,8 +287,10 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
 
                 
                 writer.close()
-                
-                print(f"Erfolgreich gespeichert unter: {excel_path}")
+                if output_dir:
+                    print(f"\n✅ Excel erfolgreich generiert: {excel_path}")
+            
+                print("[PROGRESS:100]")
                 
                 # --- B Point CSV Export ---
                 try:

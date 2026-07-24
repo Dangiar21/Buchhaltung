@@ -78,7 +78,7 @@ def build_system_instruction(nutzerdaten_dir: str, is_stage2: bool = False) -> s
         instruction += "BEISPIEL-ANTWORT:\n"
         instruction += "{\n  \"0\": {\n    \"gedankengang\": \"Käufer ist Metzger, Verkäufer ist Bäcker, Produkt ist Brot -> Wareneinkauf\",\n    \"konfidenz\": 9,\n    \"konto\": \"100 / 801006\"\n  }\n}"
     else:
-        instruction += "5. Der Wert ist ausschließlich das exakte Konto (z.B. 100 / 801006) genau wie im Kontenplan gelistet als String.\n"
+        instruction += "5. Der Wert ist ausschließlich das exakte Konto (z.B. 100 / 801006_Kalb) genau wie im Kontenplan gelistet als String.\n"
         instruction += "6. Du MUSST dich zwingend für ein Konto entscheiden. Lass den Wert NIEMALS leer, auch wenn du unsicher bist. Wähle das wahrscheinlichste.\n"
         instruction += "BEISPIEL-ANTWORT:\n"
         instruction += "{\n  \"0\": \"100 / 801006\",\n  \"1\": \"104 / 821249\"\n}"
@@ -313,8 +313,19 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
     sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     
     tasks = []
+    completed_batches = 0
+    total_batches = len(chunks)
+    
+    async def process_and_track(chunk, i):
+        nonlocal completed_batches
+        result = await process_batch_async(chunk, system_instruction_stage1, system_instruction_stage2, i + 1, len(chunks), sem, results)
+        completed_batches += 1
+        percent = 20 + int((completed_batches / total_batches) * 70)
+        print(f"[PROGRESS:{percent}]")
+        return result
+
     for i, chunk in enumerate(chunks):
-        task = process_batch_async(chunk, system_instruction_stage1, system_instruction_stage2, i + 1, len(chunks), sem, results)
+        task = process_and_track(chunk, i)
         tasks.append(task)
         
     await asyncio.gather(*tasks, return_exceptions=True)

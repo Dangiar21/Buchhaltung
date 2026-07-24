@@ -168,9 +168,7 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                 if targa_norm not in targa_dict and targa_norm not in neue_targas_set:
                     neue_targas_set.add(targa_norm)
 
-            abs_path = os.path.abspath(xml_path)
             dateiname = os.path.basename(xml_path)
-            hyperlink_formel = f'=HYPERLINK("{abs_path}", "{dateiname}")'
             
             rechnungspositionen.append({
                 'Aktiv/Passiv': aktiv_passiv,
@@ -192,7 +190,6 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                 'Gesamtpreis_Roh': total, 
                 'Waehrung': waehrung,
                 'MwSt': iva / 100.0 if iva > 0 else 0.0,
-                'Datei_Link': hyperlink_formel,
                 'Dateiname': dateiname
             })
             
@@ -212,9 +209,7 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                         bollo_qty = 1.0
                         bollo_price = abs(bollo_betrag_raw)
                     
-                    abs_path = os.path.abspath(xml_path)
                     dateiname = os.path.basename(xml_path)
-                    hyperlink_formel = f'=HYPERLINK("{abs_path}", "{dateiname}")'
                     
                     rechnungspositionen.append({
                         'Aktiv/Passiv': aktiv_passiv,
@@ -236,7 +231,6 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                         'Gesamtpreis_Roh': bollo_total,
                         'Waehrung': waehrung,
                         'MwSt': 0.0,
-                        'Datei_Link': hyperlink_formel,
                         'Dateiname': dateiname
                     })
 

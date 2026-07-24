@@ -3,9 +3,10 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 import os
 import sys
 import threading
-import io
 import re
 import queue
+import subprocess
+import logging
 
 # Modulpfade hinzufügen, damit die Unterordner erkannt werden
 script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
@@ -14,39 +15,23 @@ sys.path.append(os.path.join(script_dir, 'Programme', 'XML zu Excel'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'Analyse erstellen'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'KI_Training'))
 
-# Versuche Module zu importieren
-try:
-    from BuchungenErstellen import run_conversion
-except ImportError as e:
-    print("Fehler beim Import von BuchungenErstellen:", e)
-    run_conversion = None
+from config import ConfigManager
+from logger import setup_logger
+from controller import AppController
+
+logger = logging.getLogger(__name__)
 
 try:
-    from XMLzuExcel import run_conversion as run_xml_to_excel
-except ImportError as e:
-    print("Fehler beim Import von XMLzuExcel:", e)
-    run_xml_to_excel = None
-
-try:
-    from Analyse_Main import run_analyse
     import Analyse_Config
 except ImportError as e:
-    print("Fehler beim Import von Analyse_Main:", e)
-    run_analyse = None
+    print("Fehler beim Import von Analyse_Config:", e)
     Analyse_Config = None
-
 
 try:
     from Cache_Editor import CacheEditorFrame
 except ImportError as e:
     print("Fehler beim Import von Cache_Editor:", e)
     CacheEditorFrame = None
-
-try:
-    from Buchung_KI import ensure_konten_template
-except ImportError as e:
-    print("Fehler beim Import von ensure_konten_template:", e)
-    ensure_konten_template = None
 
 # CustomTkinter Theme
 ctk.set_appearance_mode("Light")
@@ -58,17 +43,7 @@ class TkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
         super().__init__(*args, **kwargs)
         self.TkdndVersion = TkinterDnD._require(self)
 
-class RedirectText(io.StringIO):
-    def __init__(self, text_queue, target_widget):
-        super().__init__()
-        self.text_queue = text_queue
-        self.target_widget = target_widget
 
-    def write(self, string):
-        self.text_queue.put((string, self.target_widget))
-        
-    def flush(self):
-        pass
 
 TRANSLATIONS = {
     'DE': {
@@ -96,8 +71,11 @@ TRANSLATIONS = {
 class BuchhaltungApp(TkDnD):
     def __init__(self):
         super().__init__()
+        
+        self.config_manager = ConfigManager()
+        self.lang = self.config_manager.get("language", "DE")
+        ctk.set_appearance_mode(self.config_manager.get("appearance_mode", "Light"))
 
-        self.lang = "DE"
         self.title("Buchhaltung Suite")
         self.geometry("1100x700")
 
@@ -108,48 +86,54 @@ class BuchhaltungApp(TkDnD):
         # --- Sidebar ---
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(6, weight=1)
-        self.sidebar_frame.grid_rowconfigure(7, weight=0)
+        self.sidebar_frame.grid_rowconfigure(9, weight=1)
+        self.sidebar_frame.grid_rowconfigure(10, weight=0)
 
         self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="Buchhaltung", font=ctk.CTkFont(size=20, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
 
+        self.btn_dashboard = ctk.CTkButton(self.sidebar_frame, text="🏠 Dashboard", command=self.show_dashboard, fg_color="transparent", border_width=1, text_color=("black", "white"))
+        self.btn_dashboard.grid(row=1, column=0, padx=20, pady=(0, 10))
+
         # --- Client Selection ---
         self.client_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.client_frame.grid(row=1, column=0, padx=20, pady=(0, 10), sticky="nsew")
+        self.client_frame.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="nsew")
+        
+        search_frame = ctk.CTkFrame(self.client_frame, fg_color="transparent")
+        search_frame.pack(fill="x", pady=(0, 5))
         
         self.search_client_var = ctk.StringVar()
-        self.search_client_entry = ctk.CTkEntry(self.client_frame, placeholder_text="Kunde suchen...", textvariable=self.search_client_var)
-        self.search_client_entry.pack(fill="x", pady=(0, 5))
+        self.search_client_entry = ctk.CTkEntry(search_frame, placeholder_text="Kunde suchen...", textvariable=self.search_client_var)
+        self.search_client_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.search_client_entry.bind("<KeyRelease>", self.filter_clients)
+        
+        btn_add_client = ctk.CTkButton(search_frame, text="+", width=30, command=self.open_new_client_dialog, fg_color="#2b9e4a", hover_color="#217a39")
+        btn_add_client.pack(side="right")
         
         self.client_list_frame = ctk.CTkScrollableFrame(self.client_frame, height=150, fg_color=("gray85", "gray20"))
         self.client_list_frame.pack(fill="both", expand=True, pady=(0, 5))
         
-        self.btn_new_client = ctk.CTkButton(self.client_frame, text="+ Neuer Kunde", command=self.open_new_client_dialog, fg_color="#2b9e4a", hover_color="#217a39")
-        self.btn_new_client.pack(fill="x")
-        
         self.btn_edit_client = ctk.CTkButton(self.client_frame, text="Kunde bearbeiten", command=self.open_edit_client_dialog, fg_color="#e58e26", hover_color="#b36916")
         self.btn_edit_client.pack(fill="x", pady=(5, 0))
 
+        ctk.CTkLabel(self.sidebar_frame, text="WERKZEUGE", text_color="gray50", font=ctk.CTkFont(size=11, weight="bold")).grid(row=3, column=0, sticky="w", padx=25, pady=(15, 0))
+        
         self.sidebar_btn_2 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_to_excel'], command=self.show_xml_to_excel, text_color=("black", "white"))
-        self.sidebar_btn_2.grid(row=2, column=0, padx=20, pady=10)
+        self.sidebar_btn_2.grid(row=4, column=0, padx=20, pady=(5, 10))
 
         self.sidebar_btn_3 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_buchung_erstellen'], command=self.show_buchung_erstellen, text_color=("black", "white"))
-        self.sidebar_btn_3.grid(row=3, column=0, padx=20, pady=10)
+        self.sidebar_btn_3.grid(row=5, column=0, padx=20, pady=10)
         
         self.sidebar_btn_4 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_analyse'], command=self.show_analyse, text_color=("black", "white"))
-        self.sidebar_btn_4.grid(row=4, column=0, padx=20, pady=10)
+        self.sidebar_btn_4.grid(row=6, column=0, padx=20, pady=10)
+
+        ctk.CTkLabel(self.sidebar_frame, text="SYSTEM", text_color="gray50", font=ctk.CTkFont(size=11, weight="bold")).grid(row=7, column=0, sticky="w", padx=25, pady=(15, 0))
 
         self.sidebar_btn_5 = ctk.CTkButton(self.sidebar_frame, text="KI-Training (Cache)", command=self.show_cache_editor, text_color=("black", "white"))
-        self.sidebar_btn_5.grid(row=5, column=0, padx=20, pady=10)
+        self.sidebar_btn_5.grid(row=8, column=0, padx=20, pady=(5, 10))
 
-        self.appearance_mode_switch = ctk.CTkSwitch(self.sidebar_frame, text=TRANSLATIONS[self.lang]['switch_dark'], command=self.toggle_appearance_mode)
-        self.appearance_mode_switch.grid(row=6, column=0, padx=20, pady=(20, 10), sticky="s")
-        
-        self.lang_switch = ctk.CTkSegmentedButton(self.sidebar_frame, values=["DE", "IT"], command=self.change_language)
-        self.lang_switch.set("DE")
-        self.lang_switch.grid(row=8, column=0, padx=20, pady=(10, 20), sticky="s")
+        self.btn_settings = ctk.CTkButton(self.sidebar_frame, text="⚙️ Einstellungen", command=self.show_settings, fg_color="transparent", border_width=1, text_color=("black", "white"))
+        self.btn_settings.grid(row=10, column=0, padx=20, pady=(10, 20), sticky="s")
 
         # --- Container (Right Side) ---
         self.container = ctk.CTkFrame(self, fg_color="transparent")
@@ -158,164 +142,128 @@ class BuchhaltungApp(TkDnD):
         self.container.grid_rowconfigure(0, weight=1)
 
         # --- Frames ---
+        self.build_dashboard_frame()
+        self.build_settings_frame()
         self.build_xml_to_excel_frame()
         self.build_buchung_erstellen_frame()
         self.build_analyse_frame()
         self.build_cache_editor_frame()
-        
-        # Load Clients
+
         self.base_kunden_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Kunden")
-        if not os.path.exists(self.base_kunden_dir):
-            os.makedirs(self.base_kunden_dir)
-            
+        self.controller = AppController(self.base_kunden_dir)
+        
         self.current_client = None
         self.all_clients = []
-        self.refresh_clients()
         
         self.active_tool = None
         
         self.print_queue = queue.Queue()
+        setup_logger(self.print_queue)
+        
+        self.refresh_clients()
         self.process_print_queue()
         
         # Startansicht
-        self.show_buchung_erstellen()
+        self.show_dashboard()
 
     def process_print_queue(self):
         while not self.print_queue.empty():
             try:
-                msg, target_widget = self.print_queue.get_nowait()
-                target_widget.configure(state="normal")
-                target_widget.insert("end", msg)
-                target_widget.see("end")
-                target_widget.configure(state="disabled")
+                msg = self.print_queue.get_nowait()
+                target_widget = None
+                target_progress = None
+                if self.active_tool == 'buchung_erstellen':
+                    target_widget = getattr(self, "log_textbox", None)
+                    target_progress = getattr(self, "progress_bar_buchung", None)
+                elif self.active_tool == 'xml_to_excel':
+                    target_widget = getattr(self, "xml2ex_log_textbox", None)
+                    target_progress = getattr(self, "progress_bar_xml", None)
+                elif self.active_tool == 'analyse':
+                    target_widget = getattr(self, "analyse_log_textbox", None)
+                    target_progress = getattr(self, "progress_bar_analyse", None)
+                    
+                match = re.search(r'\[PROGRESS:(\d+)\]', msg)
+                if match and target_progress:
+                    percent = int(match.group(1)) / 100.0
+                    target_progress.set(percent)
+                    msg = re.sub(r'\[PROGRESS:\d+\]', '', msg).strip()
+                    if not msg:
+                        continue
+                    msg += "\n"
+                    
+                if target_widget:
+                    target_widget.configure(state="normal")
+                    target_widget.insert("end", msg)
+                    target_widget.see("end")
+                    target_widget.configure(state="disabled")
             except queue.Empty:
                 break
         self.after(100, self.process_print_queue)
 
+    def build_tool_frame(self, parent_frame, has_setup=False):
+        parent_frame.grid_columnconfigure(0, weight=1)
+        parent_frame.grid_rowconfigure(0, weight=1)
+        parent_frame.grid_rowconfigure(1, weight=1)
+
+        drop_frame = ctk.CTkFrame(parent_frame, fg_color=("gray75", "gray25"), corner_radius=15)
+        drop_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        drop_frame.grid_columnconfigure(0, weight=1)
+        drop_frame.grid_rowconfigure(0, weight=1)
+        drop_frame.grid_rowconfigure(1, weight=1)
+        drop_frame.grid_rowconfigure(2, weight=1)
+        
+        drop_label = ctk.CTkLabel(drop_frame, text=TRANSLATIONS[self.lang]['drop_label'], font=ctk.CTkFont(size=16))
+        drop_label.grid(row=0, column=0, pady=(20, 10), sticky="s")
+        
+        btn_frame = ctk.CTkFrame(drop_frame, fg_color="transparent")
+        btn_frame.grid(row=1, column=0, pady=(10, 20), sticky="n")
+        
+        btn_files = ctk.CTkButton(btn_frame, text=TRANSLATIONS[self.lang]['btn_files'], command=self.select_files)
+        btn_files.grid(row=0, column=0, padx=10)
+        
+        btn_folder = ctk.CTkButton(btn_frame, text=TRANSLATIONS[self.lang]['btn_folder'], command=self.select_folder)
+        btn_folder.grid(row=0, column=1, padx=10)
+        
+        btn_setup = None
+        if has_setup:
+            btn_setup = ctk.CTkButton(btn_frame, text="Kategorien-Setup öffnen", command=self.open_analyse_setup, fg_color="#c85a17", hover_color="#a84b13")
+            btn_setup.grid(row=0, column=2, padx=10)
+            
+        btn_cancel = ctk.CTkButton(btn_frame, text="Abbrechen & Speichern", command=self.cancel_task, fg_color="red", hover_color="darkred")
+        btn_cancel.grid(row=0, column=3 if has_setup else 2, padx=10)
+        btn_cancel.grid_remove()
+
+        log_textbox = ctk.CTkTextbox(parent_frame, height=200)
+        log_textbox.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 5))
+        log_textbox.configure(state="disabled")
+
+        progress_bar = ctk.CTkProgressBar(parent_frame, height=10)
+        progress_bar.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 20))
+        progress_bar.set(0)
+
+        drop_frame.drop_target_register(DND_FILES)
+        drop_frame.dnd_bind('<<Drop>>', self.drop_event)
+        
+        return drop_label, btn_files, btn_folder, btn_cancel, log_textbox, progress_bar
+
     def build_buchung_erstellen_frame(self):
         self.buchung_erstellen_frame = ctk.CTkFrame(self.container, fg_color="transparent")
         self.buchung_erstellen_frame.grid(row=0, column=0, sticky="nsew")
-        self.buchung_erstellen_frame.grid_columnconfigure(0, weight=1)
-        self.buchung_erstellen_frame.grid_rowconfigure(0, weight=1)
-        self.buchung_erstellen_frame.grid_rowconfigure(1, weight=1)
-
-        # Drag and Drop Area
-        self.drop_frame = ctk.CTkFrame(self.buchung_erstellen_frame, fg_color=("gray75", "gray25"), corner_radius=15)
-        self.drop_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
-        self.drop_frame.grid_columnconfigure(0, weight=1)
-        self.drop_frame.grid_rowconfigure(0, weight=1)
-        self.drop_frame.grid_rowconfigure(1, weight=1)
-        self.drop_frame.grid_rowconfigure(2, weight=1)
-        
-        self.drop_label = ctk.CTkLabel(self.drop_frame, text=TRANSLATIONS[self.lang]['drop_label'], font=ctk.CTkFont(size=16))
-        self.drop_label.grid(row=0, column=0, pady=(20, 10), sticky="s")
-        
-        self.btn_frame = ctk.CTkFrame(self.drop_frame, fg_color="transparent")
-        self.btn_frame.grid(row=1, column=0, pady=(10, 20), sticky="n")
-        
-        self.btn_files = ctk.CTkButton(self.btn_frame, text=TRANSLATIONS[self.lang]['btn_files'], command=self.select_files)
-        self.btn_files.grid(row=0, column=0, padx=10)
-        
-        self.btn_folder = ctk.CTkButton(self.btn_frame, text=TRANSLATIONS[self.lang]['btn_folder'], command=self.select_folder)
-        self.btn_folder.grid(row=0, column=1, padx=10)
-        
-        self.btn_cancel_buchung = ctk.CTkButton(self.btn_frame, text="Abbrechen & Speichern", command=self.cancel_task, fg_color="red", hover_color="darkred")
-        self.btn_cancel_buchung.grid(row=0, column=2, padx=10)
-        self.btn_cancel_buchung.grid_remove() # Hide initially
-
-        # Log Area
-        self.log_textbox = ctk.CTkTextbox(self.buchung_erstellen_frame, height=200)
-        self.log_textbox.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        self.log_textbox.configure(state="disabled")
-
-        # Configure Drop
-        self.drop_frame.drop_target_register(DND_FILES)
-        self.drop_frame.dnd_bind('<<Drop>>', self.drop_event)
-        
-
+        self.drop_label, self.btn_files, self.btn_folder, self.btn_cancel_buchung, self.log_textbox, self.progress_bar_buchung = self.build_tool_frame(self.buchung_erstellen_frame)
 
     def build_xml_to_excel_frame(self):
         self.xml_to_excel_frame = ctk.CTkFrame(self.container, fg_color="transparent")
         self.xml_to_excel_frame.grid(row=0, column=0, sticky="nsew")
-        self.xml_to_excel_frame.grid_columnconfigure(0, weight=1)
-        self.xml_to_excel_frame.grid_rowconfigure(0, weight=1)
-        self.xml_to_excel_frame.grid_rowconfigure(1, weight=1)
+        self.xml2ex_drop_label, self.xml2ex_btn_files, self.xml2ex_btn_folder, _, self.xml2ex_log_textbox, self.progress_bar_xml = self.build_tool_frame(self.xml_to_excel_frame)
 
-        # Drag and Drop Area
-        self.xml2ex_drop_frame = ctk.CTkFrame(self.xml_to_excel_frame, fg_color=("gray75", "gray25"), corner_radius=15)
-        self.xml2ex_drop_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
-        self.xml2ex_drop_frame.grid_columnconfigure(0, weight=1)
-        self.xml2ex_drop_frame.grid_rowconfigure(0, weight=1)
-        self.xml2ex_drop_frame.grid_rowconfigure(1, weight=1)
-        self.xml2ex_drop_frame.grid_rowconfigure(2, weight=1)
-        
-        self.xml2ex_drop_label = ctk.CTkLabel(self.xml2ex_drop_frame, text=TRANSLATIONS[self.lang]['drop_label'], font=ctk.CTkFont(size=16))
-        self.xml2ex_drop_label.grid(row=0, column=0, pady=(20, 10), sticky="s")
-        
-        self.xml2ex_btn_frame = ctk.CTkFrame(self.xml2ex_drop_frame, fg_color="transparent")
-        self.xml2ex_btn_frame.grid(row=1, column=0, pady=(10, 20), sticky="n")
-        
-        self.xml2ex_btn_files = ctk.CTkButton(self.xml2ex_btn_frame, text=TRANSLATIONS[self.lang]['btn_files'], command=self.select_files)
-        self.xml2ex_btn_files.grid(row=0, column=0, padx=10)
-        
-        self.xml2ex_btn_folder = ctk.CTkButton(self.xml2ex_btn_frame, text=TRANSLATIONS[self.lang]['btn_folder'], command=self.select_folder)
-        self.xml2ex_btn_folder.grid(row=0, column=1, padx=10)
-
-        # Log Area
-        self.xml2ex_log_textbox = ctk.CTkTextbox(self.xml_to_excel_frame, height=200)
-        self.xml2ex_log_textbox.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        self.xml2ex_log_textbox.configure(state="disabled")
-
-        # Configure Drop
-        self.xml2ex_drop_frame.drop_target_register(DND_FILES)
-        self.xml2ex_drop_frame.dnd_bind('<<Drop>>', self.drop_event)
-        
     def build_analyse_frame(self):
         self.analyse_frame = ctk.CTkFrame(self.container, fg_color="transparent")
         self.analyse_frame.grid(row=0, column=0, sticky="nsew")
-        self.analyse_frame.grid_columnconfigure(0, weight=1)
-        self.analyse_frame.grid_rowconfigure(0, weight=1)
-        self.analyse_frame.grid_rowconfigure(1, weight=1)
-
-        # Drag and Drop Area
-        self.analyse_drop_frame = ctk.CTkFrame(self.analyse_frame, fg_color=("gray75", "gray25"), corner_radius=15)
-        self.analyse_drop_frame.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
-        self.analyse_drop_frame.grid_columnconfigure(0, weight=1)
-        self.analyse_drop_frame.grid_rowconfigure(0, weight=1)
-        self.analyse_drop_frame.grid_rowconfigure(1, weight=1)
-        self.analyse_drop_frame.grid_rowconfigure(2, weight=1)
-        
-        self.analyse_drop_label = ctk.CTkLabel(self.analyse_drop_frame, text=TRANSLATIONS[self.lang]['drop_label'], font=ctk.CTkFont(size=16))
-        self.analyse_drop_label.grid(row=0, column=0, pady=(20, 10), sticky="s")
-        
-        self.analyse_btn_frame = ctk.CTkFrame(self.analyse_drop_frame, fg_color="transparent")
-        self.analyse_btn_frame.grid(row=1, column=0, pady=(10, 20), sticky="n")
-        
-        self.analyse_btn_files = ctk.CTkButton(self.analyse_btn_frame, text=TRANSLATIONS[self.lang]['btn_files'], command=self.select_files)
-        self.analyse_btn_files.grid(row=0, column=0, padx=10)
-        
-        self.analyse_btn_folder = ctk.CTkButton(self.analyse_btn_frame, text=TRANSLATIONS[self.lang]['btn_folder'], command=self.select_folder)
-        self.analyse_btn_folder.grid(row=0, column=1, padx=10)
-        
-        self.analyse_btn_setup = ctk.CTkButton(self.analyse_btn_frame, text="Kategorien-Setup öffnen", command=self.open_analyse_setup, fg_color="#c85a17", hover_color="#a84b13")
-        self.analyse_btn_setup.grid(row=0, column=2, padx=10)
-        
-        self.btn_cancel_analyse = ctk.CTkButton(self.analyse_btn_frame, text="Abbrechen & Speichern", command=self.cancel_task, fg_color="red", hover_color="darkred")
-        self.btn_cancel_analyse.grid(row=0, column=3, padx=10)
-        self.btn_cancel_analyse.grid_remove() # Hide initially
-
-        # Log Area
-        self.analyse_log_textbox = ctk.CTkTextbox(self.analyse_frame, height=200)
-        self.analyse_log_textbox.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
-        self.analyse_log_textbox.configure(state="disabled")
-
-        # Configure Drop
-        self.analyse_drop_frame.drop_target_register(DND_FILES)
-        self.analyse_drop_frame.dnd_bind('<<Drop>>', self.drop_event)
+        self.analyse_drop_label, self.analyse_btn_files, self.analyse_btn_folder, self.btn_cancel_analyse, self.analyse_log_textbox, self.progress_bar_analyse = self.build_tool_frame(self.analyse_frame, has_setup=True)
 
     def open_analyse_setup(self):
         if not self.current_client or self.current_client == "Kein Kunde":
-            print("\n❌ Bitte wähle zuerst einen Kunden in der Seitenleiste aus!")
+            logger.error("\n❌ Bitte wähle zuerst einen Kunden in der Seitenleiste aus!")
             return
             
         client_dir = os.path.join(self.base_kunden_dir, self.current_client)
@@ -325,14 +273,12 @@ class BuchhaltungApp(TkDnD):
         if Analyse_Config:
             Analyse_Config.ensure_setup_file(nutzerdaten_dir)
             
-            print(f"Öffne {setup_path}...")
+            logger.info(f"Öffne {setup_path}...")
             if os.name == 'nt' or sys.platform == 'win32':
                 os.startfile(setup_path)
             elif sys.platform == 'darwin':
-                import subprocess
                 subprocess.run(['open', setup_path], check=True)
             else:
-                import subprocess
                 subprocess.run(['xdg-open', setup_path], check=True)
         else:
             print("Analyse_Config.py konnte nicht importiert werden.")
@@ -356,16 +302,20 @@ class BuchhaltungApp(TkDnD):
             self.cache_editor_frame.load_data()
 
     def hide_all_frames(self):
+        self.dashboard_frame.grid_remove()
+        self.settings_frame.grid_remove()
         self.xml_to_excel_frame.grid_remove()
         self.buchung_erstellen_frame.grid_remove()
         self.analyse_frame.grid_remove()
         self.cache_editor_frame.grid_remove()
         
     def reset_sidebar_buttons(self):
+        self.btn_dashboard.configure(fg_color="transparent")
         self.sidebar_btn_2.configure(fg_color="transparent")
         self.sidebar_btn_3.configure(fg_color="transparent")
         self.sidebar_btn_4.configure(fg_color="transparent")
         self.sidebar_btn_5.configure(fg_color="transparent")
+        self.btn_settings.configure(fg_color="transparent")
 
     def show_xml_to_excel(self):
         self.active_tool = 'xml_to_excel'
@@ -373,9 +323,7 @@ class BuchhaltungApp(TkDnD):
         self.xml_to_excel_frame.grid()
         self.reset_sidebar_buttons()
         self.sidebar_btn_2.configure(fg_color=("gray75", "gray25"))
-        sys.stdout = RedirectText(self.print_queue, self.xml2ex_log_textbox)
-        sys.stderr = sys.stdout
-        print(TRANSLATIONS[self.lang]['welcome_msg'])
+        logger.info(TRANSLATIONS[self.lang]['welcome_msg'])
 
     def show_buchung_erstellen(self):
         self.active_tool = 'buchung_erstellen'
@@ -383,9 +331,7 @@ class BuchhaltungApp(TkDnD):
         self.buchung_erstellen_frame.grid()
         self.reset_sidebar_buttons()
         self.sidebar_btn_3.configure(fg_color=("gray75", "gray25"))
-        sys.stdout = RedirectText(self.print_queue, self.log_textbox)
-        sys.stderr = sys.stdout
-        print(TRANSLATIONS[self.lang]['welcome_msg'])
+        logger.info(TRANSLATIONS[self.lang]['welcome_msg'])
 
     def show_analyse(self):
         self.active_tool = 'analyse'
@@ -393,12 +339,11 @@ class BuchhaltungApp(TkDnD):
         self.analyse_frame.grid()
         self.reset_sidebar_buttons()
         self.sidebar_btn_4.configure(fg_color=("gray75", "gray25"))
-        sys.stdout = RedirectText(self.print_queue, self.analyse_log_textbox)
-        sys.stderr = sys.stdout
-        print(TRANSLATIONS[self.lang]['welcome_msg'])
+        logger.info(TRANSLATIONS[self.lang]['welcome_msg'])
 
     def change_language(self, choice):
         self.lang = choice
+        self.config_manager.set("language", choice)
         t = TRANSLATIONS[self.lang]
         self.sidebar_btn_2.configure(text=t['btn_xml_to_excel'])
         self.sidebar_btn_3.configure(text=t['btn_buchung_erstellen'])
@@ -418,14 +363,29 @@ class BuchhaltungApp(TkDnD):
         self.xml2ex_log_textbox.delete("1.0", "end")
         self.xml2ex_log_textbox.configure(state="disabled")
         
-        print(t['welcome_msg'])
+        self.analyse_drop_label.configure(text=t['drop_label'])
+        self.analyse_btn_files.configure(text=t['btn_files'])
+        self.analyse_btn_folder.configure(text=t['btn_folder'])
+        self.analyse_log_textbox.configure(state="normal")
+        self.analyse_log_textbox.delete("1.0", "end")
+        self.analyse_log_textbox.configure(state="disabled")
+        
+        logger.info(t['welcome_msg'])
 
 
     def toggle_appearance_mode(self):
-        if self.appearance_mode_switch.get() == 1:
-            ctk.set_appearance_mode("Dark")
+        mode = self.appearance_mode_switch.get()
+        new_mode = "Dark" if mode == 1 else "Light"
+        ctk.set_appearance_mode(new_mode)
+        self.config_manager.set("appearance_mode", new_mode)
+        
+    def create_backup_gui(self):
+        import tkinter.messagebox
+        success = self.controller.create_backup()
+        if success:
+            tkinter.messagebox.showinfo("Backup", "Backup wird im Hintergrund erstellt. Siehe Logfenster für Details.")
         else:
-            ctk.set_appearance_mode("Light")
+            tkinter.messagebox.showerror("Backup Fehler", "Fehler beim Starten des Backups.")
 
     def parse_dropped_paths(self, data):
         paths = []
@@ -464,122 +424,43 @@ class BuchhaltungApp(TkDnD):
             self.process_paths([folder_path])
 
     def process_paths(self, paths):
-        if not self.current_client or self.current_client == "Kein Kunde":
-            print("\n❌ Bitte wähle zuerst einen Kunden in der Seitenleiste aus!")
-            return
-            
-        print(f"\n--- Starte Verarbeitung für Kunde: {self.current_client} ({len(paths)} Elemente erkannt) ---")
-        client_dir = os.path.join(self.base_kunden_dir, self.current_client)
-        output_dir = os.path.join(client_dir, "Buchhaltung")
-        nutzerdaten_dir = os.path.join(client_dir, "Nutzerdaten")
-        
-        if self.active_tool == 'buchung_erstellen':
-            if run_conversion:
-                thread = threading.Thread(target=self.run_task, args=(paths, output_dir, nutzerdaten_dir, run_conversion), daemon=True)
-                thread.start()
-            else:
-                print("Fehler: BuchungenErstellen.py konnte nicht importiert werden.")
-        elif self.active_tool == 'xml_to_excel':
-            if run_xml_to_excel:
-                thread = threading.Thread(target=self.run_task, args=(paths, output_dir, nutzerdaten_dir, run_xml_to_excel), daemon=True)
-                thread.start()
-            else:
-                print("Fehler: XMLzuExcel.py konnte nicht importiert werden.")
-        elif self.active_tool == 'analyse':
-            if run_analyse:
-                base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
-                folder = paths[0] if len(paths) > 0 else client_dir
-                thread = threading.Thread(target=self.run_task, args=([folder], output_dir, nutzerdaten_dir, lambda paths, output_dir, nutzerdaten_dir: run_analyse(paths[0], self.current_client, base_dir, nutzerdaten_dir)), daemon=True)
-                thread.start()
-            else:
-                print("Fehler: Analyse_Main.py konnte nicht importiert werden.")
-
-    def cancel_task(self):
-        print("\n[!] Abbruch angefordert! Die aktuelle Verarbeitung wird nach dem laufenden Batch beendet und gespeichert.")
-        try:
-            import Buchung_KI
-            Buchung_KI.cancel_requested = True
-        except ImportError:
-            pass
-        try:
-            import Analyse_KI
-            Analyse_KI.cancel_requested = True
-        except ImportError:
-            pass
-
-    def run_task(self, paths, output_dir, nutzerdaten_dir, func):
-        try:
-            # Reset flags
-            try:
-                import Buchung_KI
-                Buchung_KI.cancel_requested = False
-            except ImportError:
-                pass
-            try:
-                import Analyse_KI
-                Analyse_KI.cancel_requested = False
-            except ImportError:
-                pass
-                
-            # Show buttons
+        def on_start():
             if self.active_tool == 'buchung_erstellen':
                 self.btn_cancel_buchung.grid()
             elif self.active_tool == 'analyse':
                 self.btn_cancel_analyse.grid()
 
-            func(paths, output_dir=output_dir, nutzerdaten_dir=nutzerdaten_dir)
-            
-            try:
-                import Buchung_KI
-                import Analyse_KI
-                if getattr(Buchung_KI, 'cancel_requested', False) or getattr(Analyse_KI, 'cancel_requested', False):
-                    print("\n⚠️ Verarbeitung wurde vorzeitig abgebrochen. Die bisherigen Ergebnisse wurden gespeichert.")
-                else:
-                    print("\n✅ Verarbeitung abgeschlossen.")
-            except ImportError:
-                print("\n✅ Verarbeitung abgeschlossen.")
-                
-        except Exception as e:
-            print(f"\n❌ Ein unerwarteter Fehler ist aufgetreten: {e}")
-        finally:
-            # Hide buttons
+        def on_finish():
             if self.active_tool == 'buchung_erstellen':
                 self.btn_cancel_buchung.grid_remove()
             elif self.active_tool == 'analyse':
                 self.btn_cancel_analyse.grid_remove()
 
+        self.controller.process_paths(
+            paths=paths,
+            active_tool=self.active_tool,
+            current_client=self.current_client,
+            on_start=on_start,
+            on_finish=on_finish
+        )
+
+    def cancel_task(self):
+        self.controller.cancel_task()
+
     def refresh_clients(self):
-        self.all_clients = []
-        if os.path.exists(self.base_kunden_dir):
-            for d in os.listdir(self.base_kunden_dir):
-                if os.path.isdir(os.path.join(self.base_kunden_dir, d)):
-                    self.all_clients.append(d)
-        
-        self.all_clients.sort()
+        self.all_clients = self.controller.get_all_clients()
         
         if not self.all_clients:
             self.current_client = None
             self.search_client_var.set("Kein Kunde")
         else:
-            # Versuche den letzten Kunden zu laden
-            last_client_file = os.path.join(self.base_kunden_dir, "last_client.json")
-            saved_client = None
-            if os.path.exists(last_client_file):
-                try:
-                    import json
-                    with open(last_client_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        saved_client = data.get("last_client")
-                except Exception as e:
-                    print(f"Fehler beim Laden des letzten Kunden: {e}")
-            
+            saved_client = self.config_manager.get("last_client")
             if saved_client and saved_client in self.all_clients:
                 self.current_client = saved_client
             elif self.current_client not in self.all_clients:
                 self.current_client = self.all_clients[0]
                 
             self.search_client_var.set(self.current_client)
-            # Preview Frame aktualisieren
             self.on_client_changed(self.current_client)
             
         self.render_client_list()
@@ -630,24 +511,17 @@ class BuchhaltungApp(TkDnD):
     def on_client_changed(self, choice):
         if choice and choice != "Kein Kunde" and choice != "Kein Kunde gefunden":
             self.current_client = choice
-            print(f"\nKunde gewechselt zu: {self.current_client}")
-            
-            # Letzten Kunden speichern
-            try:
-                import json
-                last_client_file = os.path.join(self.base_kunden_dir, "last_client.json")
-                with open(last_client_file, "w", encoding="utf-8") as f:
-                    json.dump({"last_client": self.current_client}, f)
-            except Exception as e:
-                print(f"Fehler beim Speichern des letzten Kunden: {e}")
-            
-
+            logger.info(f"\nKunde gewechselt zu: {self.current_client}")
+            self.config_manager.set("last_client", self.current_client)
+            self.config_manager.add_recent_client(self.current_client)
+            if getattr(self, "active_tool", None) == 'dashboard':
+                self.show_dashboard()
         else:
             self.current_client = None
 
     def open_edit_client_dialog(self):
         if not self.current_client or self.current_client == "Kein Kunde":
-            print("\n❌ Bitte wähle zuerst einen Kunden aus, den du bearbeiten möchtest!")
+            logger.error("\n❌ Bitte wähle zuerst einen Kunden aus, den du bearbeiten möchtest!")
             return
         self.open_new_client_dialog(edit_client_name=self.current_client)
 
@@ -769,111 +643,196 @@ class BuchhaltungApp(TkDnD):
             name_entry.insert(0, edit_client_name)
             name_entry.configure(state="disabled")
             
-            import json
-            info_path = os.path.join(self.base_kunden_dir, edit_client_name, "Nutzerdaten", "info.json")
-            if os.path.exists(info_path):
-                try:
-                    with open(info_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        if "Rechtsform" in data: forma_combo.set(data["Rechtsform"])
-                        if "Beschreibung" in data: 
-                            desc_text.delete("1.0", "end")
-                            desc_text.insert("1.0", data["Beschreibung"])
-                        if "Partita_IVA" in data: piva_entry.insert(0, data["Partita_IVA"])
-                        if "Codice_Fiscale" in data: cf_entry.insert(0, data["Codice_Fiscale"])
-                        if "Regime_Contabile" in data: regime_combo.set(data["Regime_Contabile"])
-                        if "Liquidazione_IVA" in data: liq_combo.set(data["Liquidazione_IVA"])
-                        if "Adresse" in data: addr_entry.insert(0, data["Adresse"])
-                        if "PEC" in data: pec_entry.insert(0, data["PEC"])
-                        if "SDI" in data: sdi_entry.insert(0, data["SDI"])
-                        if "IBAN" in data: iban_entry.insert(0, data["IBAN"])
-                except Exception as e:
-                    print(f"Fehler beim Laden der Kundendaten: {e}")
+            data = self.controller.get_client_data(edit_client_name)
+            if data:
+                if "Rechtsform" in data and data["Rechtsform"]: forma_combo.set(data["Rechtsform"])
+                if "Beschreibung" in data and data["Beschreibung"]: 
+                    desc_text.delete("1.0", "end")
+                    desc_text.insert("1.0", data["Beschreibung"])
+                if "Partita_IVA" in data and data["Partita_IVA"]: piva_entry.insert(0, data["Partita_IVA"])
+                if "Codice_Fiscale" in data and data["Codice_Fiscale"]: cf_entry.insert(0, data["Codice_Fiscale"])
+                if "Regime_Contabile" in data and data["Regime_Contabile"]: regime_combo.set(data["Regime_Contabile"])
+                if "Liquidazione_IVA" in data and data["Liquidazione_IVA"]: liq_combo.set(data["Liquidazione_IVA"])
+                if "Adresse" in data and data["Adresse"]: addr_entry.insert(0, data["Adresse"])
+                if "PEC" in data and data["PEC"]: pec_entry.insert(0, data["PEC"])
+                if "SDI" in data and data["SDI"]: sdi_entry.insert(0, data["SDI"])
+                if "IBAN" in data and data["IBAN"]: iban_entry.insert(0, data["IBAN"])
         
+        error_label = ctk.CTkLabel(dialog, text="", text_color="red")
+        error_label.pack(pady=(5, 0))
+
         def save_client():
+            error_label.configure(text="")
             name_raw = name_entry.get().strip()
             if not name_raw:
-                print("Fehler: Firmenname darf nicht leer sein!")
+                error_label.configure(text="Fehler: Firmenname darf nicht leer sein!")
                 return
                 
-            name = re.sub(r'[<>:"/\\|?*]', '_', name_raw)
+            client_data = {
+                "Kundenname": name_raw,
+                "Rechtsform": forma_combo.get(),
+                "Beschreibung": desc_text.get("1.0", "end").strip(),
+                "Partita_IVA": piva_entry.get().strip(),
+                "Codice_Fiscale": cf_entry.get().strip(),
+                "Regime_Contabile": regime_combo.get(),
+                "Liquidazione_IVA": liq_combo.get(),
+                "Adresse": addr_entry.get().strip(),
+                "PEC": pec_entry.get().strip(),
+                "SDI": sdi_entry.get().strip(),
+                "IBAN": iban_entry.get().strip()
+            }
+            template_name = template_combo.get() if not is_edit else None
             
-            if is_edit:
-                info_nutzerdaten_dir = os.path.join(self.base_kunden_dir, name, "Nutzerdaten")
-                client_data = {
-                    "Kundenname": name,
-                    "Rechtsform": forma_combo.get(),
-                    "Beschreibung": desc_text.get("1.0", "end").strip(),
-                    "Partita_IVA": piva_entry.get().strip(),
-                    "Codice_Fiscale": cf_entry.get().strip(),
-                    "Regime_Contabile": regime_combo.get(),
-                    "Liquidazione_IVA": liq_combo.get(),
-                    "Adresse": addr_entry.get().strip(),
-                    "PEC": pec_entry.get().strip(),
-                    "SDI": sdi_entry.get().strip(),
-                    "IBAN": iban_entry.get().strip()
-                }
-                import json
-                info_path = os.path.join(info_nutzerdaten_dir, "info.json")
-                with open(info_path, "w", encoding="utf-8") as f:
-                    json.dump(client_data, f, ensure_ascii=False, indent=4)
-                
-                print(f"\n=> Kunde '{name}' erfolgreich aktualisiert!")
-                dialog.destroy()
-                return
-
-            client_dir = os.path.join(self.base_kunden_dir, name)
-            if not os.path.exists(client_dir):
-                os.makedirs(client_dir)
-                os.makedirs(os.path.join(client_dir, "Rechnungen"))
-                os.makedirs(os.path.join(client_dir, "Buchhaltung"))
-                os.makedirs(os.path.join(client_dir, "Analyse"))
-                info_nutzerdaten_dir = os.path.join(client_dir, "Nutzerdaten")
-                os.makedirs(info_nutzerdaten_dir, exist_ok=True)
-                
-                if ensure_konten_template:
-                    ensure_konten_template(info_nutzerdaten_dir)
-                
-                # KI-Kontenplan Vorlage kopieren
-                template_name = template_combo.get()
-                template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Systemdaten", "Templates", f"{template_name}.txt")
-                target_txt_path = os.path.join(info_nutzerdaten_dir, "KI_Kontenplan.txt")
-                if os.path.exists(template_path):
-                    import shutil
-                    shutil.copy2(template_path, target_txt_path)
-                else:
-                    with open(target_txt_path, "w", encoding="utf-8") as f:
-                        f.write("HINTERGRUND:\n- Konto 0000: Unbekannt\n\nREGELN:\n")
-                
-                # Sammle alle Daten in einem Dictionary
-                client_data = {
-                    "Kundenname": name,
-                    "Rechtsform": forma_combo.get(),
-                    "Beschreibung": desc_text.get("1.0", "end").strip(),
-                    "Partita_IVA": piva_entry.get().strip(),
-                    "Codice_Fiscale": cf_entry.get().strip(),
-                    "Regime_Contabile": regime_combo.get(),
-                    "Liquidazione_IVA": liq_combo.get(),
-                    "Adresse": addr_entry.get().strip(),
-                    "PEC": pec_entry.get().strip(),
-                    "SDI": sdi_entry.get().strip(),
-                    "IBAN": iban_entry.get().strip()
-                }
-                
-                import json
-                info_path = os.path.join(info_nutzerdaten_dir, "info.json")
-                with open(info_path, "w", encoding="utf-8") as f:
-                    json.dump(client_data, f, ensure_ascii=False, indent=4)
-                
-                print(f"\n=> Kunde '{name}' erfolgreich angelegt!")
-                self.refresh_clients()
-                self.select_client_from_list(name)
+            success, final_name = self.controller.save_client(name_raw, is_edit, client_data, template_name)
+            if success:
+                if not is_edit:
+                    self.refresh_clients()
+                    self.select_client_from_list(final_name)
                 dialog.destroy()
             else:
-                print(f"Kunde '{name}' existiert bereits!")
-                
+                error_label.configure(text=f"Fehler: {final_name}")
+
         btn_save = ctk.CTkButton(dialog, text="Speichern", command=save_client)
         btn_save.pack(pady=10)
+
+
+    def build_dashboard_frame(self):
+        self.dashboard_frame = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.dashboard_frame.grid(row=0, column=0, sticky="nsew")
+        self.dashboard_frame.grid_columnconfigure((0, 1), weight=1)
+        
+        title = ctk.CTkLabel(self.dashboard_frame, text="Dashboard", font=ctk.CTkFont(size=28, weight="bold"))
+        title.grid(row=0, column=0, columnspan=2, pady=(20, 30), sticky="w", padx=20)
+        
+        # Stats Cards Container
+        stats_frame = ctk.CTkFrame(self.dashboard_frame, fg_color="transparent")
+        stats_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=20)
+        stats_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        
+        # Client Count Card
+        self.card_clients = ctk.CTkFrame(stats_frame, corner_radius=15, fg_color=("white", "gray20"), border_width=1, border_color=("gray85", "gray15"))
+        self.card_clients.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        ctk.CTkLabel(self.card_clients, text="Gesamte Kunden", font=ctk.CTkFont(size=14)).pack(pady=(15, 5))
+        self.lbl_client_count = ctk.CTkLabel(self.card_clients, text="-", font=ctk.CTkFont(size=32, weight="bold"))
+        self.lbl_client_count.pack(pady=(0, 15))
+        
+        # Backup Card
+        self.card_backup = ctk.CTkFrame(stats_frame, corner_radius=15, fg_color=("white", "gray20"), border_width=1, border_color=("gray85", "gray15"))
+        self.card_backup.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
+        ctk.CTkLabel(self.card_backup, text="Letztes Backup", font=ctk.CTkFont(size=14)).pack(pady=(15, 5))
+        self.lbl_last_backup = ctk.CTkLabel(self.card_backup, text="-", font=ctk.CTkFont(size=16, weight="bold"))
+        self.lbl_last_backup.pack(pady=(10, 15))
+        
+        # Recent Clients Card
+        self.card_recent = ctk.CTkFrame(stats_frame, corner_radius=15, fg_color=("white", "gray20"), border_width=1, border_color=("gray85", "gray15"))
+        self.card_recent.grid(row=0, column=2, padx=10, pady=10, sticky="nsew")
+        ctk.CTkLabel(self.card_recent, text="Zuletzt verwendet", font=ctk.CTkFont(size=14)).pack(pady=(15, 5))
+        self.lbl_recent_clients = ctk.CTkLabel(self.card_recent, text="-", font=ctk.CTkFont(size=14))
+        self.lbl_recent_clients.pack(pady=(0, 15))
+        
+        # Quick Actions
+        ctk.CTkLabel(self.dashboard_frame, text="Schnellzugriff", font=ctk.CTkFont(size=20, weight="bold")).grid(row=2, column=0, columnspan=2, pady=(40, 10), sticky="w", padx=20)
+        
+        actions_frame = ctk.CTkFrame(self.dashboard_frame, fg_color="transparent")
+        actions_frame.grid(row=3, column=0, columnspan=2, sticky="ew", padx=20)
+        
+        btn1 = ctk.CTkButton(actions_frame, text="[+] Neuen Kunden anlegen", font=ctk.CTkFont(weight="bold"), command=self.open_new_client_dialog, fg_color="#2b9e4a", hover_color="#217a39")
+        btn1.pack(side="left", padx=10)
+        
+        btn2 = ctk.CTkButton(actions_frame, text="[↓] Backup jetzt erstellen", font=ctk.CTkFont(weight="bold"), command=self.create_backup_gui, fg_color="#2b9e4a", hover_color="#217a39")
+        btn2.pack(side="left", padx=10)
+
+    def show_dashboard(self):
+        self.hide_all_frames()
+        self.dashboard_frame.grid()
+        self.reset_sidebar_buttons()
+        self.btn_dashboard.configure(fg_color=("gray75", "gray25"))
+        self.active_tool = 'dashboard'
+        
+        # Update Stats
+        if hasattr(self, 'controller'):
+            stats = self.controller.get_dashboard_stats()
+            self.lbl_client_count.configure(text=str(stats.get("client_count", 0)))
+            self.lbl_last_backup.configure(text=stats.get("last_backup", "Nie"))
+            
+            recent = self.config_manager.get("recent_clients", [])
+            if recent:
+                self.lbl_recent_clients.configure(text="\n".join(recent))
+            else:
+                self.lbl_recent_clients.configure(text="Keine")
+
+    def build_settings_frame(self):
+        self.settings_frame = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.settings_frame.grid(row=0, column=0, sticky="nsew")
+        self.settings_frame.grid_columnconfigure(0, weight=1)
+        
+        title = ctk.CTkLabel(self.settings_frame, text="Einstellungen", font=ctk.CTkFont(size=28, weight="bold"))
+        title.grid(row=0, column=0, pady=(20, 30), sticky="w", padx=20)
+        
+        content = ctk.CTkFrame(self.settings_frame, corner_radius=15)
+        content.grid(row=1, column=0, sticky="nsew", padx=20)
+        content.grid_columnconfigure(1, weight=1)
+        
+        row_idx = 0
+        
+        # Appearance Mode
+        ctk.CTkLabel(content, text="Erscheinungsbild:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=20, sticky="w")
+        self.settings_mode_switch = ctk.CTkSwitch(content, text=TRANSLATIONS[self.lang]['switch_dark'], command=self.toggle_appearance_mode)
+        if self.config_manager.get("appearance_mode", "Light") == "Dark":
+            self.settings_mode_switch.select()
+        self.settings_mode_switch.grid(row=row_idx, column=1, padx=20, pady=20, sticky="w")
+        self.appearance_mode_switch = self.settings_mode_switch  # Repoint old ref
+        row_idx += 1
+        
+        # Language
+        ctk.CTkLabel(content, text="Sprache:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=20, sticky="w")
+        self.settings_lang = ctk.CTkSegmentedButton(content, values=["DE", "IT"], command=self.change_language)
+        self.settings_lang.set(self.config_manager.get("language", "DE"))
+        self.settings_lang.grid(row=row_idx, column=1, padx=20, pady=20, sticky="w")
+        self.lang_switch = self.settings_lang  # Repoint old ref
+        row_idx += 1
+        
+        # API Key
+        ctk.CTkLabel(content, text="Gemini API Key:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=20, sticky="w")
+        self.api_key_entry = ctk.CTkEntry(content, width=300, show="*")
+        self.api_key_entry.grid(row=row_idx, column=1, padx=20, pady=20, sticky="w")
+        
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Systemdaten", "gemini_key.env")
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    content_key = f.read().strip()
+                    if content_key.startswith("GEMINI_API_KEY="):
+                        content_key = content_key.split("=", 1)[1].strip('"').strip("'")
+                    self.api_key_entry.insert(0, content_key)
+            except Exception as e:
+                logger.error(f"Fehler beim Lesen des API-Keys: {e}")
+                
+        row_idx += 1
+        
+        # Save Button
+        btn_save = ctk.CTkButton(content, text="Speichern", command=self.save_settings)
+        btn_save.grid(row=row_idx, column=1, padx=20, pady=30, sticky="e")
+        
+    def save_settings(self):
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Systemdaten", "gemini_key.env")
+        os.makedirs(os.path.dirname(env_path), exist_ok=True)
+        key_val = self.api_key_entry.get().strip()
+        try:
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write(f"GEMINI_API_KEY={key_val}")
+        except Exception as e:
+            logger.error(f"Fehler beim Speichern des API-Keys: {e}")
+            
+        import tkinter.messagebox
+        tkinter.messagebox.showinfo("Erfolg", "Einstellungen gespeichert!")
+
+    def show_settings(self):
+        self.hide_all_frames()
+        self.settings_frame.grid()
+        self.reset_sidebar_buttons()
+        self.btn_settings.configure(fg_color=("gray75", "gray25"))
+        self.active_tool = 'settings'
 
 if __name__ == "__main__":
     app = BuchhaltungApp()

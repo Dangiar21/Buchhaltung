@@ -20,3 +20,8 @@ Systemdaten/*.db
 **/Excel_Sammlung/*.xlsx
 *.xlsx
 !Systemdaten/*.xlsx
+
+# Laufzeitdaten
+app.log
+config.json
+Backups/

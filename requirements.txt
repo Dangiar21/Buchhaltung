@@ -1,0 +1,11 @@
+pandas
+openpyxl
+customtkinter
+reportlab
+asn1crypto
+tkinterdnd2
+defusedxml
+python-dotenv
+google-genai
+sqlalchemy
+pydantic
