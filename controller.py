@@ -20,6 +20,11 @@ except ImportError:
     run_xml_to_excel = None
 
 try:
+    from CSVzuExcel import run_conversion as run_csv_to_excel
+except ImportError:
+    run_csv_to_excel = None
+
+try:
     from Analyse_Main import run_analyse
 except ImportError:
     run_analyse = None
@@ -133,15 +138,16 @@ class AppController:
                 ensure_konten_template(info_nutzerdaten_dir)
             
             if template_name:
-                template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Systemdaten", "Templates", f"{template_name}.txt")
-                target_txt_path = os.path.join(info_nutzerdaten_dir, "KI_Kontenplan.txt")
-                if os.path.exists(template_path):
-                    shutil.copy2(template_path, target_txt_path)
-                else:
-                    with open(target_txt_path, "w", encoding="utf-8") as f:
-                        f.write("HINTERGRUND:\\n- Konto 0000: Unbekannt\\n\\nREGELN:\\n")
+                for typ in ["ER", "AR"]:
+                    template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Systemdaten", "Templates", f"{typ}_{template_name}.txt")
+                    target_txt_path = os.path.join(info_nutzerdaten_dir, f"{typ}_Kontenplan.txt")
+                    if os.path.exists(template_path):
+                        shutil.copy2(template_path, target_txt_path)
+                    else:
+                        with open(target_txt_path, "w", encoding="utf-8") as f:
+                            f.write("HINTERGRUND:\n- Konto 0000: Unbekannt\n\nREGELN:\n")
             
-            success_msg = f"\\n=> Kunde '{name}' erfolgreich angelegt!"
+            success_msg = f"\n=> Kunde '{name}' erfolgreich angelegt!"
 
         try:
             kunde = self.session.query(Kunde).filter_by(name=name).first()
@@ -221,6 +227,12 @@ class AppController:
                 thread.start()
             else:
                 logger.error("Fehler: XMLzuExcel.py konnte nicht importiert werden.")
+        elif active_tool == 'csv_to_excel':
+            if run_csv_to_excel:
+                thread = threading.Thread(target=self._run_task_thread, args=(paths, output_dir, nutzerdaten_dir, run_csv_to_excel, on_start, on_finish), daemon=True)
+                thread.start()
+            else:
+                logger.error("Fehler: CSVzuExcel.py konnte nicht importiert werden.")
         elif active_tool == 'analyse':
             if run_analyse:
                 base_dir = os.path.dirname(os.path.abspath(__file__))

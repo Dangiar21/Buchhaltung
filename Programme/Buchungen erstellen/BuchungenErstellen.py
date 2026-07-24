@@ -2,6 +2,7 @@ import sys
 import os
 import traceback
 import re
+from difflib import SequenceMatcher
 
 # Utils aus dem übergeordneten Ordner laden
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -24,6 +25,19 @@ def ask_shorten_desc_local_fallback():
 
 from sdi_parser import parse_sdi_xml
 
+def clean_description_for_dedup(desc):
+    if not desc: return ""
+    desc = desc.upper()
+    desc = re.sub(r'\b(\d{1,2}[\./-]\d{1,2}[\./-]\d{2,4}|\d{4}[\./-]\d{1,2}[\./-]\d{1,2})\b', ' ', desc)
+    months_de = r'JANUAR|FEBRUAR|MÄRZ|APRIL|MAI|JUNI|JULI|AUGUST|SEPTEMBER|OKTOBER|NOVEMBER|DEZEMBER|JAN|FEB|MÄR|APR|JUN|JUL|AUG|SEP|OKT|NOV|DEZ'
+    months_it = r'GENNAIO|FEBBRAIO|MARZO|APRILE|MAGGIO|GIUGNO|LUGLIO|AGOSTO|SETTEMBRE|OTTOBRE|NOVEMBRE|DICEMBRE|GEN|MAG|GIU|LUG|AGO|SET|OTT|DIC'
+    months = rf'\b({months_de}|{months_it})\b'
+    desc = re.sub(months + r'(\s*\d{2,4})?', ' ', desc)
+    desc = re.sub(r'\b\d+([.,-]\d+)*\s*(KG|G|L|ML|CM|MM|M|STK|STÜCK|PZ|%)\b', ' ', desc)
+    desc = re.sub(r'\b\d+\s*$', ' ', desc)
+    desc = re.sub(r'[()/\-:]', ' ', desc)
+    return re.sub(r'\s+', ' ', desc).strip()
+
 def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True, client_vat_id="", db_konten_cache=None):
     if db_konten_cache is None: db_konten_cache = {}
     print(f"Lese: {xml_path}")
@@ -33,8 +47,17 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
     
     for item in parsed_items:
         # Konto ermitteln
-        cache_key = f"{item['Lieferant']} | {item['Beschreibung']}".strip().upper()
-        if cache_key in db_konten_cache:
+        # Nutze die bereinigte Beschreibung (ohne Datum etc.) für den Cache
+        clean_desc = clean_description_for_dedup(item['Beschreibung'])
+        cache_key = f"{item['Lieferant']} | {clean_desc}".strip().upper()
+        
+        # Fallback auf rohe Beschreibung, falls im Cache noch alte Einträge sind
+        cache_key_raw = f"{item['Lieferant']} | {item['Beschreibung']}".strip().upper()
+        
+        if cache_key_raw in db_konten_cache:
+            conto = str(db_konten_cache[cache_key_raw]['value'])
+            is_pending = not db_konten_cache[cache_key_raw]['confirmed']
+        elif cache_key in db_konten_cache:
             conto = str(db_konten_cache[cache_key]['value'])
             is_pending = not db_konten_cache[cache_key]['confirmed']
         else:
@@ -68,6 +91,18 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
         })
         
     return rechnungspositionen
+
+
+def is_similar_desc(d1, d2, threshold=0.80):
+    if d1 == d2: return True
+    if SequenceMatcher(None, d1, d2).ratio() >= threshold: return True
+    w1, w2 = d1.split(), d2.split()
+    if len(w1) >= 2 and len(w2) >= 2:
+        plen = min(3, len(w1), len(w2))
+        if w1[:plen] == w2[:plen]: return True
+    if len(d1) > 5 and len(d2) > 5:
+        if d1.startswith(d2) or d2.startswith(d1): return True
+    return False
 
 def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
     if paths is None:
@@ -154,44 +189,95 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     
             
             if alle_positionen:
+                # --- Heuristik für Aktiv/Passiv (verschoben vor KI) ---
+                all_vats = []
+                for pos in alle_positionen:
+                    if pos.get('Liefer ID'): all_vats.append(pos['Liefer ID'])
+                    if pos.get('Kunden ID'): all_vats.append(pos['Kunden ID'])
+                if all_vats:
+                    from collections import Counter
+                    guessed_vat = Counter(all_vats).most_common(1)[0][0]
+                    for pos in alle_positionen:
+                        if not pos.get('Aktiv/Passiv'):
+                            if pos.get('Liefer ID') == guessed_vat:
+                                pos['Aktiv/Passiv'] = 'Attiva'
+                            elif pos.get('Kunden ID') == guessed_vat:
+                                pos['Aktiv/Passiv'] = 'Passiva'
+                            else:
+                                pos['Aktiv/Passiv'] = 'Passiva'
+                                
                 # --- KI Fallback ---
                 import Buchung_KI
                 api_key = Buchung_KI.get_api_key(base_dir)
                 
-                ai_indices = []
-                unique_unknowns = {}
+                unique_unknowns_er = {}
+                unique_unknowns_ar = {}
+                
                 for i, pos in enumerate(alle_positionen):
                     if pos.pop('is_pending', False):
-                        ai_indices.append(i + 2)
+                        pos['_is_ai'] = True
                         
                     if pos.get('Unterkonto') == '???':
-                        desc_norm = re.sub(r'\s+', ' ', pos.get('Beschreibung', '')).strip().upper()
-                        key = (pos.get('Liefer ID', ''), desc_norm, pos.get('Kunden ID', ''))
-                        if key not in unique_unknowns:
-                            excluded_keys = {'Typ', 'Liefer ID', 'Kunden ID', 'Menge', 'MwSt Satz', 'Dateiname', 'Unterkonto', 'Hauptkonto', 'is_pending'}
-                            item_data = {'id': str(len(unique_unknowns))}
+                        desc_raw = pos.get('Beschreibung', '')
+                        desc_norm = clean_description_for_dedup(desc_raw)
+                        liefer_id = pos.get('Liefer ID', '')
+                        kunden_id = pos.get('Kunden ID', '')
+                        
+                        is_er = pos.get('Aktiv/Passiv', 'Passiva') == 'Passiva'
+                        target_dict = unique_unknowns_er if is_er else unique_unknowns_ar
+                        
+                        # Find matching key using fuzzy logic
+                        matched_key = None
+                        for existing_key in target_dict.keys():
+                            e_liefer, e_desc, e_kunden = existing_key
+                            if e_liefer == liefer_id and e_kunden == kunden_id:
+                                if is_similar_desc(e_desc, desc_norm):
+                                    matched_key = existing_key
+                                    break
+                                    
+                        if not matched_key:
+                            matched_key = (liefer_id, desc_norm, kunden_id)
+                            excluded_keys = {'Typ', 'Liefer ID', 'Kunden ID', 'Menge', 'MwSt Satz', 'Dateiname', 'Unterkonto', 'Hauptkonto', 'is_pending', '_is_ai'}
+                            item_id = f"er_{len(unique_unknowns_er)}" if is_er else f"ar_{len(unique_unknowns_ar)}"
+                            item_data = {'id': item_id, 'Desc_Norm': desc_norm}
                             for k, v in pos.items():
                                 if k not in excluded_keys and not str(k).startswith('Einzelpreis') and not str(k).startswith('Gesamtpreis'):
                                     item_data[k] = v
-                                    
-                            unique_unknowns[key] = {
+                            target_dict[matched_key] = {
                                 'item': item_data,
                                 'indices': []
                             }
-                        unique_unknowns[key]['indices'].append(i)
+                            
+                        target_dict[matched_key]['indices'].append(i)
                         
-                if unique_unknowns and api_key:
-                    items_to_send = [u['item'] for u in unique_unknowns.values()]
-                    total_dups = sum(len(u['indices']) for u in unique_unknowns.values())
-                    print(f"\nSende {len(items_to_send)} eindeutige unbekannte Artikel an die KI (Dedupliziert von {total_dups} Positionen)...")
-                    ai_results = Buchung_KI.ask_gemini_batch(items_to_send, api_key, nutzerdaten_dir)
-                    for key, data in unique_unknowns.items():
-                        unique_id = data['item']['id']
-                        if unique_id in ai_results:
-                            konto = ai_results[unique_id]
-                            for original_i in data['indices']:
-                                alle_positionen[original_i]['Unterkonto'] = konto
-                                ai_indices.append(original_i + 2)
+                if api_key:
+                    # ER Batch
+                    if unique_unknowns_er:
+                        items_to_send = [u['item'] for u in unique_unknowns_er.values()]
+                        total_dups = sum(len(u['indices']) for u in unique_unknowns_er.values())
+                        print(f"\nSende {len(items_to_send)} Eingangsrechnungs-Artikel an die KI (Dedupliziert von {total_dups} Positionen)...")
+                        ai_results = Buchung_KI.ask_gemini_batch(items_to_send, api_key, nutzerdaten_dir, is_er=True)
+                        for key, data in unique_unknowns_er.items():
+                            unique_id = data['item']['id']
+                            if unique_id in ai_results:
+                                konto = ai_results[unique_id]
+                                for original_i in data['indices']:
+                                    alle_positionen[original_i]['Unterkonto'] = konto
+                                    alle_positionen[original_i]['_is_ai'] = True
+                                    
+                    # AR Batch
+                    if unique_unknowns_ar:
+                        items_to_send = [u['item'] for u in unique_unknowns_ar.values()]
+                        total_dups = sum(len(u['indices']) for u in unique_unknowns_ar.values())
+                        print(f"\nSende {len(items_to_send)} Ausgangsrechnungs-Artikel an die KI (Dedupliziert von {total_dups} Positionen)...")
+                        ai_results = Buchung_KI.ask_gemini_batch(items_to_send, api_key, nutzerdaten_dir, is_er=False)
+                        for key, data in unique_unknowns_ar.items():
+                            unique_id = data['item']['id']
+                            if unique_id in ai_results:
+                                konto = ai_results[unique_id]
+                                for original_i in data['indices']:
+                                    alle_positionen[original_i]['Unterkonto'] = konto
+                                    alle_positionen[original_i]['_is_ai'] = True
 
                 # Generelle Konvertierung und Hauptkonto-Ableitung
                 for pos in alle_positionen:
@@ -207,6 +293,23 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     else:
                         pos['Hauptkonto'] = c
 
+                                # Heuristik: Falls Aktiv/Passiv fehlt, anhand der häufigsten VAT raten
+                all_vats = []
+                for pos in alle_positionen:
+                    if pos.get('Liefer ID'): all_vats.append(pos['Liefer ID'])
+                    if pos.get('Kunden ID'): all_vats.append(pos['Kunden ID'])
+                if all_vats:
+                    from collections import Counter
+                    guessed_vat = Counter(all_vats).most_common(1)[0][0]
+                    for pos in alle_positionen:
+                        if not pos.get('Aktiv/Passiv'):
+                            if pos.get('Liefer ID') == guessed_vat:
+                                pos['Aktiv/Passiv'] = 'Attiva'
+                            elif pos.get('Kunden ID') == guessed_vat:
+                                pos['Aktiv/Passiv'] = 'Passiva'
+                            else:
+                                pos['Aktiv/Passiv'] = 'Passiva'
+                
                 print(f"\nErstelle Excel-Datei mit {len(alle_positionen)} Positionen...")
                 df = pd.DataFrame(alle_positionen)
                 
@@ -215,6 +318,16 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 if not has_targa:
                     if 'Kennzeichen' in df.columns:
                         df = df.drop(columns=['Kennzeichen', 'Fahrzeugtyp'])
+                
+                # Split dataframe by Aktiv/Passiv
+                if 'Aktiv/Passiv' in df.columns:
+                    df_eingang = df[df['Aktiv/Passiv'] == 'Passiva'].copy().reset_index(drop=True)
+                    df_ausgang = df[df['Aktiv/Passiv'] == 'Attiva'].copy().reset_index(drop=True)
+                    df_eingang = df_eingang.drop(columns=['Aktiv/Passiv'])
+                    df_ausgang = df_ausgang.drop(columns=['Aktiv/Passiv'])
+                else:
+                    df_eingang = df.copy().reset_index(drop=True)
+                    df_ausgang = pd.DataFrame(columns=df.columns)
                 
                 # Excel Datei generieren
                 if output_dir:
@@ -235,70 +348,76 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     counter += 1
 
                 writer = pd.ExcelWriter(excel_path, engine='openpyxl')
-                df.to_excel(writer, index=False, sheet_name='Buchungen')
                 
-                worksheet = writer.sheets['Buchungen']
-                # Automatische Spaltenbreite (Performance-optimiert: nur erste 50 Zeilen prüfen)
-                for column_cells in worksheet.columns:
-                    max_length = 0
-                    column_letter = column_cells[0].column_letter
-                    for cell in column_cells[:50]:
-                        try:
-                            if cell.value:
-                                val_str = str(cell.value)
-                                length = len(val_str)
-                                if length > max_length:
-                                    max_length = length
-                        except Exception as e:
-                            print(f'Fehler: {e}')
-                            pass
-                    
-                    # Breite = maximale Textlänge + Puffer (ca. 1cm)
-                    adjusted_width = max_length + 6 
-                    if adjusted_width > 70:  # Spalten nicht unendlich groß machen
-                        adjusted_width = 70
-                        
-                    worksheet.column_dimensions[column_letter].width = adjusted_width
-                
-                # Dynamische Spaltenindizes finden (1-basiert für openpyxl)
-                col_indices = {cell.value: idx for idx, cell in enumerate(worksheet[1], start=1)}
-                
-                einzelpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Einzelpreis')), None)
-                gesamtpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Gesamtpreis')), None)
-                mwst_col = col_indices.get('MwSt (%)')
+                sheets_to_process = []
+                if not df_eingang.empty or df_ausgang.empty: # Default if both empty
+                    df_eingang_export = df_eingang.drop(columns=['_is_ai']) if '_is_ai' in df_eingang.columns else df_eingang
+                    df_eingang_export.to_excel(writer, index=False, sheet_name='Eingangsrechnungen')
+                    sheets_to_process.append(('Eingangsrechnungen', df_eingang))
+                if not df_ausgang.empty:
+                    df_ausgang_export = df_ausgang.drop(columns=['_is_ai']) if '_is_ai' in df_ausgang.columns else df_ausgang
+                    df_ausgang_export.to_excel(writer, index=False, sheet_name='Ausgangsrechnungen')
+                    sheets_to_process.append(('Ausgangsrechnungen', df_ausgang))
 
-                euro_format = '#,##0.00 €'
-                percent_format = '0.00%'
                 from openpyxl.styles import Font
                 red_font = Font(color="FF0000", bold=True)
-                conto_col = col_indices.get('Unterkonto')
-                
-                for row in range(2, worksheet.max_row + 1):
-                    if einzelpreis_col:
-                        worksheet.cell(row=row, column=einzelpreis_col).number_format = euro_format
-                    if gesamtpreis_col:
-                        worksheet.cell(row=row, column=gesamtpreis_col).number_format = euro_format
-                    if mwst_col:
-                        worksheet.cell(row=row, column=mwst_col).number_format = percent_format
-                    
-                    if conto_col and row in ai_indices:
-                        worksheet.cell(row=row, column=conto_col).font = red_font
-                
+                euro_format = '#,##0.00 €'
+                percent_format = '0.00%'
 
+                for sheet_name, df_sheet in sheets_to_process:
+                    worksheet = writer.sheets[sheet_name]
+                    
+                    # Automatische Spaltenbreite (Performance-optimiert: nur erste 50 Zeilen prüfen)
+                    for column_cells in worksheet.columns:
+                        max_length = 0
+                        column_letter = column_cells[0].column_letter
+                        for cell in column_cells[:50]:
+                            try:
+                                if cell.value:
+                                    val_str = str(cell.value)
+                                    length = len(val_str)
+                                    if length > max_length:
+                                        max_length = length
+                            except Exception as e:
+                                pass
+                        
+                        # Breite = maximale Textlänge + Puffer (ca. 1cm)
+                        adjusted_width = max_length + 6 
+                        if adjusted_width > 70:  # Spalten nicht unendlich groß machen
+                            adjusted_width = 70
+                            
+                        worksheet.column_dimensions[column_letter].width = adjusted_width
+                    
+                    # Dynamische Spaltenindizes finden (1-basiert für openpyxl)
+                    col_indices = {cell.value: idx for idx, cell in enumerate(worksheet[1], start=1)}
+                    
+                    einzelpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Einzelpreis')), None)
+                    gesamtpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Gesamtpreis')), None)
+                    mwst_col = col_indices.get('MwSt (%)')
+                    conto_col = col_indices.get('Unterkonto')
+                    
+                    # Find AI rows for this specific sheet
+                    ai_rows = set()
+                    if '_is_ai' in df_sheet.columns:
+                        ai_rows = set(df_sheet.index[df_sheet['_is_ai'] == True].tolist())
+                    
+                    for row in range(2, worksheet.max_row + 1):
+                        if einzelpreis_col:
+                            worksheet.cell(row=row, column=einzelpreis_col).number_format = euro_format
+                        if gesamtpreis_col:
+                            worksheet.cell(row=row, column=gesamtpreis_col).number_format = euro_format
+                        if mwst_col:
+                            worksheet.cell(row=row, column=mwst_col).number_format = percent_format
+                        
+                        # Dataframe index is 0-based, worksheet is 1-based and row 1 is header. So row 2 is index 0.
+                        if conto_col and (row - 2) in ai_rows:
+                            worksheet.cell(row=row, column=conto_col).font = red_font
                 
                 writer.close()
                 if output_dir:
                     print(f"\n✅ Excel erfolgreich generiert: {excel_path}")
             
                 print("[PROGRESS:100]")
-                
-                # --- B Point CSV Export ---
-                try:
-                    import BPoint_Export
-                    csv_path = excel_path.replace('.xlsx', '_PrimaNota.csv')
-                    BPoint_Export.export_to_bpoint_csv(df, csv_path)
-                except Exception as e:
-                    print(f"Fehler beim B Point CSV-Export: {e}")
                 
                 append_new_targas_to_excel(targa_file, neue_targas_set)
                 

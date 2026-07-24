@@ -70,6 +70,9 @@ class CacheEditorFrame(ctk.CTkFrame):
         self.save_btn = ctk.CTkButton(batch_frame, text="💾 Manuelle Änderungen Speichern", command=self.save_data, fg_color="#e58e26", hover_color="#b36916")
         self.save_btn.pack(side="right", padx=5)
         
+        self.add_btn = ctk.CTkButton(batch_frame, text="➕ Neuer Eintrag", command=self.add_new_entry, fg_color="#3498db", hover_color="#2980b9")
+        self.add_btn.pack(side="right", padx=15)
+        
         # --- 3. Data Area ---
         self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color=("gray90", "gray15"), corner_radius=10)
         self.scroll_frame.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="nsew")
@@ -353,3 +356,62 @@ class CacheEditorFrame(ctk.CTkFrame):
                 
         self.show_status("Manuelle Änderungen gespeichert!", "green")
         self.render_page()
+
+    def add_new_entry(self):
+        client = self.get_client()
+        if not client:
+            self.show_status("Bitte zuerst einen Kunden auswählen!", "red")
+            return
+            
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Neuen Eintrag hinzufügen")
+        dialog.geometry("450x350")
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        ctk.CTkLabel(dialog, text="Lieferant (z.B. Hans):", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 0))
+        liefer_var = ctk.StringVar()
+        ctk.CTkEntry(dialog, textvariable=liefer_var, width=350).pack(pady=5)
+        
+        ctk.CTkLabel(dialog, text="Beschreibung (z.B. Kuh 25.12.2006):", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 0))
+        desc_var = ctk.StringVar()
+        ctk.CTkEntry(dialog, textvariable=desc_var, width=350).pack(pady=5)
+        
+        ctk.CTkLabel(dialog, text="Konto (z.B. 4000):", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 0))
+        val_var = ctk.StringVar()
+        ctk.CTkEntry(dialog, textvariable=val_var, width=350).pack(pady=5)
+        
+        def save():
+            lieferant = liefer_var.get().strip()
+            desc = desc_var.get().strip()
+            val = val_var.get().strip()
+            if not lieferant or not desc or not val:
+                return
+                
+            key = f"{lieferant} | {desc}".upper()
+            
+            cache_type = self.cache_type_var.get()
+            try:
+                if cache_type == "Sektorenanalyse":
+                    import json
+                    parsed_val = json.loads(val)
+                else:
+                    parsed_val = val
+            except:
+                parsed_val = val
+                
+            new_entry = {key: {'value': parsed_val, 'confirmed': True}}
+            
+            db = get_db()
+            if cache_type == "Sektorenanalyse":
+                db.save_analyse_cache_batch(client, new_entry)
+            else:
+                db.save_konten_cache_batch(client, new_entry)
+                
+            self.current_data[key] = new_entry[key]
+            
+            dialog.destroy()
+            self.apply_filters_and_render()
+            self.show_status("Eintrag hinzugefügt!", "green")
+            
+        ctk.CTkButton(dialog, text="Speichern", command=save, fg_color="#2b9e4a", hover_color="#217a39").pack(pady=25)

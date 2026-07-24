@@ -105,6 +105,23 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 print(f"[PROGRESS:{percent}]")
             
             if alle_positionen:
+                # Heuristik: Falls Aktiv/Passiv fehlt, anhand der häufigsten VAT raten
+                all_vats = []
+                for pos in alle_positionen:
+                    if pos.get('Liefer ID'): all_vats.append(pos['Liefer ID'])
+                    if pos.get('Kunden ID'): all_vats.append(pos['Kunden ID'])
+                if all_vats:
+                    from collections import Counter
+                    guessed_vat = Counter(all_vats).most_common(1)[0][0]
+                    for pos in alle_positionen:
+                        if not pos.get('Aktiv/Passiv'):
+                            if pos.get('Liefer ID') == guessed_vat:
+                                pos['Aktiv/Passiv'] = 'Attiva'
+                            elif pos.get('Kunden ID') == guessed_vat:
+                                pos['Aktiv/Passiv'] = 'Passiva'
+                            else:
+                                pos['Aktiv/Passiv'] = 'Passiva'
+                                
                 print(f"\nErstelle Excel-Datei mit {len(alle_positionen)} Positionen...")
                 df = pd.DataFrame(alle_positionen)
                 
@@ -112,6 +129,16 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 if not has_targa:
                     if 'Kennzeichen' in df.columns:
                         df = df.drop(columns=['Kennzeichen', 'Fahrzeugtyp'])
+                
+                # Split dataframe by Aktiv/Passiv
+                if 'Aktiv/Passiv' in df.columns:
+                    df_eingang = df[df['Aktiv/Passiv'] == 'Passiva'].copy().reset_index(drop=True)
+                    df_ausgang = df[df['Aktiv/Passiv'] == 'Attiva'].copy().reset_index(drop=True)
+                    df_eingang = df_eingang.drop(columns=['Aktiv/Passiv'])
+                    df_ausgang = df_ausgang.drop(columns=['Aktiv/Passiv'])
+                else:
+                    df_eingang = df.copy().reset_index(drop=True)
+                    df_ausgang = pd.DataFrame(columns=df.columns)
                 
                 if output_dir:
                     sammlung_ordner = output_dir
@@ -130,45 +157,53 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     counter += 1
 
                 writer = pd.ExcelWriter(excel_path, engine='openpyxl')
-                df.to_excel(writer, index=False, sheet_name='XML_Daten')
                 
-                worksheet = writer.sheets['XML_Daten']
-                for column_cells in worksheet.columns:
-                    max_length = 0
-                    column_letter = column_cells[0].column_letter
-                    for cell in column_cells[:50]:
-                        try:
-                            if cell.value:
-                                val_str = str(cell.value)
-                                length = len(val_str)
-                                if length > max_length:
-                                    max_length = length
-                        except Exception as e:
-                            print(f'Fehler: {e}')
-                            pass
-                    
-                    adjusted_width = max_length + 6 
-                    if adjusted_width > 70:
-                        adjusted_width = 70
-                        
-                    worksheet.column_dimensions[column_letter].width = adjusted_width
-                
-                col_indices = {cell.value: idx for idx, cell in enumerate(worksheet[1], start=1)}
-                
-                einzelpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Einzelpreis')), None)
-                gesamtpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Gesamtpreis')), None)
-                mwst_col = col_indices.get('MwSt (%)')
+                sheets_to_process = []
+                if not df_eingang.empty or df_ausgang.empty:
+                    df_eingang.to_excel(writer, index=False, sheet_name='Eingangsrechnungen')
+                    sheets_to_process.append('Eingangsrechnungen')
+                if not df_ausgang.empty:
+                    df_ausgang.to_excel(writer, index=False, sheet_name='Ausgangsrechnungen')
+                    sheets_to_process.append('Ausgangsrechnungen')
 
                 euro_format = '#,##0.00 €'
                 percent_format = '0.00%'
-                
-                for row in range(2, worksheet.max_row + 1):
-                    if einzelpreis_col:
-                        worksheet.cell(row=row, column=einzelpreis_col).number_format = euro_format
-                    if gesamtpreis_col:
-                        worksheet.cell(row=row, column=gesamtpreis_col).number_format = euro_format
-                    if mwst_col:
-                        worksheet.cell(row=row, column=mwst_col).number_format = percent_format
+
+                for sheet_name in sheets_to_process:
+                    worksheet = writer.sheets[sheet_name]
+                    
+                    for column_cells in worksheet.columns:
+                        max_length = 0
+                        column_letter = column_cells[0].column_letter
+                        for cell in column_cells[:50]:
+                            try:
+                                if cell.value:
+                                    val_str = str(cell.value)
+                                    length = len(val_str)
+                                    if length > max_length:
+                                        max_length = length
+                            except Exception as e:
+                                pass
+                        
+                        adjusted_width = max_length + 6 
+                        if adjusted_width > 70:
+                            adjusted_width = 70
+                            
+                        worksheet.column_dimensions[column_letter].width = adjusted_width
+                    
+                    col_indices = {cell.value: idx for idx, cell in enumerate(worksheet[1], start=1)}
+                    
+                    einzelpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Einzelpreis')), None)
+                    gesamtpreis_col = next((idx for name, idx in col_indices.items() if name and str(name).startswith('Gesamtpreis')), None)
+                    mwst_col = col_indices.get('MwSt (%)')
+                    
+                    for row in range(2, worksheet.max_row + 1):
+                        if einzelpreis_col:
+                            worksheet.cell(row=row, column=einzelpreis_col).number_format = euro_format
+                        if gesamtpreis_col:
+                            worksheet.cell(row=row, column=gesamtpreis_col).number_format = euro_format
+                        if mwst_col:
+                            worksheet.cell(row=row, column=mwst_col).number_format = percent_format
                 
                 writer.close()
                 

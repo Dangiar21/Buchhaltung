@@ -14,6 +14,7 @@ sys.path.append(os.path.join(script_dir, 'Programme', 'Buchungen erstellen'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'XML zu Excel'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'Analyse erstellen'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'KI_Training'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'CSV zu Excel'))
 
 from config import ConfigManager
 from logger import setup_logger
@@ -47,6 +48,7 @@ class TkDnD(ctk.CTk, TkinterDnD.DnDWrapper):
 
 TRANSLATIONS = {
     'DE': {
+        'btn_csv_to_excel': 'CSV zu Excel',
         'btn_xml_to_excel': 'XML zu Excel',
         'btn_buchung_erstellen': 'Buchung erstellen',
         'btn_analyse': 'Analyse erstellen',
@@ -57,6 +59,7 @@ TRANSLATIONS = {
         'switch_dark': 'Dark Mode'
     },
     'IT': {
+        'btn_csv_to_excel': 'CSV a Excel',
         'btn_xml_to_excel': 'XML a Excel',
         'btn_buchung_erstellen': 'Crea Registrazioni',
         'btn_analyse': 'Crea Analisi',
@@ -86,8 +89,8 @@ class BuchhaltungApp(TkDnD):
         # --- Sidebar ---
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(9, weight=1)
-        self.sidebar_frame.grid_rowconfigure(10, weight=0)
+        self.sidebar_frame.grid_rowconfigure(10, weight=1)
+        self.sidebar_frame.grid_rowconfigure(11, weight=0)
 
         self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="Buchhaltung", font=ctk.CTkFont(size=20, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
@@ -121,19 +124,22 @@ class BuchhaltungApp(TkDnD):
         self.sidebar_btn_2 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_xml_to_excel'], command=self.show_xml_to_excel, text_color=("black", "white"))
         self.sidebar_btn_2.grid(row=4, column=0, padx=20, pady=(5, 10))
 
+        self.sidebar_btn_csv = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang].get('btn_csv_to_excel', 'CSV zu Excel'), command=self.show_csv_to_excel, text_color=("black", "white"))
+        self.sidebar_btn_csv.grid(row=5, column=0, padx=20, pady=(5, 10))
+
         self.sidebar_btn_3 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_buchung_erstellen'], command=self.show_buchung_erstellen, text_color=("black", "white"))
-        self.sidebar_btn_3.grid(row=5, column=0, padx=20, pady=10)
+        self.sidebar_btn_3.grid(row=6, column=0, padx=20, pady=10)
         
         self.sidebar_btn_4 = ctk.CTkButton(self.sidebar_frame, text=TRANSLATIONS[self.lang]['btn_analyse'], command=self.show_analyse, text_color=("black", "white"))
-        self.sidebar_btn_4.grid(row=6, column=0, padx=20, pady=10)
+        self.sidebar_btn_4.grid(row=7, column=0, padx=20, pady=10)
 
-        ctk.CTkLabel(self.sidebar_frame, text="SYSTEM", text_color="gray50", font=ctk.CTkFont(size=11, weight="bold")).grid(row=7, column=0, sticky="w", padx=25, pady=(15, 0))
+        ctk.CTkLabel(self.sidebar_frame, text="SYSTEM", text_color="gray50", font=ctk.CTkFont(size=11, weight="bold")).grid(row=8, column=0, sticky="w", padx=25, pady=(15, 0))
 
         self.sidebar_btn_5 = ctk.CTkButton(self.sidebar_frame, text="KI-Training (Cache)", command=self.show_cache_editor, text_color=("black", "white"))
-        self.sidebar_btn_5.grid(row=8, column=0, padx=20, pady=(5, 10))
+        self.sidebar_btn_5.grid(row=9, column=0, padx=20, pady=(5, 10))
 
         self.btn_settings = ctk.CTkButton(self.sidebar_frame, text="⚙️ Einstellungen", command=self.show_settings, fg_color="transparent", border_width=1, text_color=("black", "white"))
-        self.btn_settings.grid(row=10, column=0, padx=20, pady=(10, 20), sticky="s")
+        self.btn_settings.grid(row=11, column=0, padx=20, pady=(10, 20), sticky="s")
 
         # --- Container (Right Side) ---
         self.container = ctk.CTkFrame(self, fg_color="transparent")
@@ -145,6 +151,7 @@ class BuchhaltungApp(TkDnD):
         self.build_dashboard_frame()
         self.build_settings_frame()
         self.build_xml_to_excel_frame()
+        self.build_csv_to_excel_frame()
         self.build_buchung_erstellen_frame()
         self.build_analyse_frame()
         self.build_cache_editor_frame()
@@ -181,6 +188,9 @@ class BuchhaltungApp(TkDnD):
                 elif self.active_tool == 'analyse':
                     target_widget = getattr(self, "analyse_log_textbox", None)
                     target_progress = getattr(self, "progress_bar_analyse", None)
+                elif self.active_tool == 'csv_to_excel':
+                    target_widget = getattr(self, "csv2ex_log_textbox", None)
+                    target_progress = getattr(self, "progress_bar_csv", None)
                     
                 match = re.search(r'\[PROGRESS:(\d+)\]', msg)
                 if match and target_progress:
@@ -256,6 +266,12 @@ class BuchhaltungApp(TkDnD):
         self.xml_to_excel_frame.grid(row=0, column=0, sticky="nsew")
         self.xml2ex_drop_label, self.xml2ex_btn_files, self.xml2ex_btn_folder, _, self.xml2ex_log_textbox, self.progress_bar_xml = self.build_tool_frame(self.xml_to_excel_frame)
 
+    def build_csv_to_excel_frame(self):
+        self.csv_to_excel_frame = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.csv_to_excel_frame.grid(row=0, column=0, sticky="nsew")
+        self.csv2ex_drop_label, self.csv2ex_btn_files, self.csv2ex_btn_folder, self.csv2ex_btn_cancel, self.csv2ex_log_textbox, self.progress_bar_csv = self.build_tool_frame(self.csv_to_excel_frame)
+        self.csv2ex_drop_label.configure(text="CSV Dateien (z.B. Shopify) hier ablegen\\n(Drag & Drop)")
+
     def build_analyse_frame(self):
         self.analyse_frame = ctk.CTkFrame(self.container, fg_color="transparent")
         self.analyse_frame.grid(row=0, column=0, sticky="nsew")
@@ -307,6 +323,7 @@ class BuchhaltungApp(TkDnD):
         self.xml_to_excel_frame.grid_remove()
         self.buchung_erstellen_frame.grid_remove()
         self.analyse_frame.grid_remove()
+        self.csv_to_excel_frame.grid_remove()
         self.cache_editor_frame.grid_remove()
         
     def reset_sidebar_buttons(self):
@@ -315,6 +332,8 @@ class BuchhaltungApp(TkDnD):
         self.sidebar_btn_3.configure(fg_color="transparent")
         self.sidebar_btn_4.configure(fg_color="transparent")
         self.sidebar_btn_5.configure(fg_color="transparent")
+        if hasattr(self, 'sidebar_btn_csv'):
+            self.sidebar_btn_csv.configure(fg_color="transparent")
         self.btn_settings.configure(fg_color="transparent")
 
     def show_xml_to_excel(self):
@@ -323,6 +342,15 @@ class BuchhaltungApp(TkDnD):
         self.xml_to_excel_frame.grid()
         self.reset_sidebar_buttons()
         self.sidebar_btn_2.configure(fg_color=("gray75", "gray25"))
+        logger.info(TRANSLATIONS[self.lang]['welcome_msg'])
+
+    def show_csv_to_excel(self):
+        self.active_tool = 'csv_to_excel'
+        self.hide_all_frames()
+        self.csv_to_excel_frame.grid()
+        self.reset_sidebar_buttons()
+        if hasattr(self, 'sidebar_btn_csv'):
+            self.sidebar_btn_csv.configure(fg_color=("gray75", "gray25"))
         logger.info(TRANSLATIONS[self.lang]['welcome_msg'])
 
     def show_buchung_erstellen(self):
@@ -411,9 +439,15 @@ class BuchhaltungApp(TkDnD):
         return os.getcwd()
 
     def select_files(self):
-        filetypes = (('Rechnungen (XML/P7M)', '*.xml *.p7m'), ('Alle Dateien', '*.*'))
+        if self.active_tool == 'csv_to_excel':
+            filetypes = (('CSV Dateien', '*.csv'), ('Alle Dateien', '*.*'))
+            title = 'Wähle CSV Dateien aus'
+        else:
+            filetypes = (('Rechnungen (XML/P7M)', '*.xml *.p7m'), ('Alle Dateien', '*.*'))
+            title = 'Wähle XML/P7M Dateien aus'
+            
         initial_dir = self.get_initial_dir()
-        filenames = ctk.filedialog.askopenfilenames(title='Wähle XML/P7M Dateien aus', filetypes=filetypes, initialdir=initial_dir)
+        filenames = ctk.filedialog.askopenfilenames(title=title, filetypes=filetypes, initialdir=initial_dir)
         if filenames:
             self.process_paths(list(filenames))
             
@@ -557,22 +591,27 @@ class BuchhaltungApp(TkDnD):
         
         # KI-Kontenplan Template
         if not is_edit:
-            lbl_template = ctk.CTkLabel(tabview.tab("Basis & KI"), text="KI-Kontenplan Vorlage")
+            lbl_template = ctk.CTkLabel(tabview.tab("Basis & KI"), text="Kontenplan Vorlage (ER & AR)")
             lbl_template.pack(anchor="w", padx=10)
             template_combo = ctk.CTkOptionMenu(tabview.tab("Basis & KI"), values=["Codice_Civile_2424", "Standard"], width=400)
             template_combo.pack(padx=10, pady=(0, 10))
             template_combo.set("Codice_Civile_2424")
         else:
-            def open_ki_editor():
+            def open_editor(typ, title):
                 editor = ctk.CTkToplevel(dialog)
-                editor.title(f"KI-Kontenplan: {edit_client_name}")
+                editor.title(f"{title}: {edit_client_name}")
                 editor.geometry("600x500")
                 editor.attributes('-topmost', 'true')
+                
+                # Zwingt das Fenster, strikt im Vordergrund von 'dialog' zu bleiben
+                editor.transient(dialog)
+                # Blockiert alle Eingaben für die Fenster darunter
+                editor.grab_set()
                 
                 txt = ctk.CTkTextbox(editor, width=550, height=400)
                 txt.pack(padx=20, pady=20)
                 
-                file_path = os.path.join(self.base_kunden_dir, edit_client_name, "Nutzerdaten", "KI_Kontenplan.txt")
+                file_path = os.path.join(self.base_kunden_dir, edit_client_name, "Nutzerdaten", f"{typ}_Kontenplan.txt")
                 if os.path.exists(file_path):
                     with open(file_path, "r", encoding="utf-8") as f:
                         txt.insert("1.0", f.read())
@@ -581,13 +620,19 @@ class BuchhaltungApp(TkDnD):
                     with open(file_path, "w", encoding="utf-8") as f:
                         f.write(txt.get("1.0", "end-1c"))
                     editor.destroy()
-                    print(f"KI-Kontenplan für {edit_client_name} gespeichert.")
+                    print(f"{title} für {edit_client_name} gespeichert.")
                     
                 btn_s = ctk.CTkButton(editor, text="Speichern", command=save_txt)
                 btn_s.pack()
-                
-            btn_edit_ki = ctk.CTkButton(tabview.tab("Basis & KI"), text="KI-Kontenplan bearbeiten", command=open_ki_editor, fg_color="#c85a17", hover_color="#a84b13")
-            btn_edit_ki.pack(padx=10, pady=(0, 10))
+
+            frame_btns = ctk.CTkFrame(tabview.tab("Basis & KI"), fg_color="transparent")
+            frame_btns.pack(padx=10, pady=(0, 10), fill="x")
+            
+            btn_edit_er = ctk.CTkButton(frame_btns, text="ER-Kontenplan bearbeiten", command=lambda: open_editor("ER", "ER-Kontenplan"), fg_color="#c85a17", hover_color="#a84b13", width=190)
+            btn_edit_er.pack(side="left", padx=(0, 5))
+            
+            btn_edit_ar = ctk.CTkButton(frame_btns, text="AR-Kontenplan bearbeiten", command=lambda: open_editor("AR", "AR-Kontenplan"), fg_color="#c85a17", hover_color="#a84b13", width=190)
+            btn_edit_ar.pack(side="left", padx=(5, 0))
 
         lbl_desc = ctk.CTkLabel(tabview.tab("Basis & KI"), text="Beschreibung (Wichtig für KI)")
         lbl_desc.pack(anchor="w", padx=10)

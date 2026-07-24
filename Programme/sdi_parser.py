@@ -44,7 +44,13 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                 if nome or cognome:
                     lieferant = f"{nome} {cognome}".strip()
                     
-        liefer_id = get_text(root, './/CedentePrestatore//DatiAnagrafici//IdFiscaleIVA/IdCodice')
+        def normalize_vat(v):
+            if not v: return ""
+            v = str(v).strip().upper()
+            if v.startswith("IT"): v = v[2:]
+            return v
+            
+        liefer_id = normalize_vat(get_text(root, './/CedentePrestatore//DatiAnagrafici//IdFiscaleIVA/IdCodice'))
 
         # 2. Rechnungsdaten (DatiGeneraliDocumento)
         dati_generali = root.find('.//DatiGeneraliDocumento')
@@ -75,14 +81,15 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                 if k_nome or k_cognome:
                     kunde = f"{k_nome} {k_cognome}".strip()
 
-        kunden_id = get_text(root, './/CessionarioCommittente//DatiAnagrafici//IdFiscaleIVA/IdCodice')
+        kunden_id = normalize_vat(get_text(root, './/CessionarioCommittente//DatiAnagrafici//IdFiscaleIVA/IdCodice'))
+        norm_client_vat = normalize_vat(client_vat_id)
 
         # Aktiv/Passiv ermitteln
         aktiv_passiv = ""
-        if client_vat_id:
-            if liefer_id == client_vat_id:
+        if norm_client_vat:
+            if liefer_id == norm_client_vat:
                 aktiv_passiv = "Attiva"
-            elif kunden_id == client_vat_id:
+            elif kunden_id == norm_client_vat:
                 aktiv_passiv = "Passiva"
 
         # --- DettaglioLinee (Rechnungszeilen) ---

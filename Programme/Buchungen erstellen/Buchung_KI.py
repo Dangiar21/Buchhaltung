@@ -28,17 +28,18 @@ except ImportError:
 
 def ensure_konten_template(nutzerdaten_dir: str):
     import shutil
-    txt_path = os.path.join(nutzerdaten_dir, "KI_Kontenplan.txt")
-    if not os.path.exists(txt_path):
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        template_path = os.path.join(base_dir, "Systemdaten", "Templates", "Codice_Civile_2424.txt")
-        if os.path.exists(template_path):
-            try:
-                shutil.copy2(template_path, txt_path)
-            except Exception as e:
-                print(f"Fehler beim Kopieren des KI-Kontenplan Templates: {e}")
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for typ in ["ER", "AR"]:
+        txt_path = os.path.join(nutzerdaten_dir, f"{typ}_Kontenplan.txt")
+        if not os.path.exists(txt_path):
+            template_path = os.path.join(base_dir, "Systemdaten", "Templates", f"{typ}_Codice_Civile_2424.txt")
+            if os.path.exists(template_path):
+                try:
+                    shutil.copy2(template_path, txt_path)
+                except Exception as e:
+                    pass
 
-def build_system_instruction(nutzerdaten_dir: str, is_stage2: bool = False) -> str:
+def build_system_instruction(nutzerdaten_dir: str, is_stage2: bool = False, is_er: bool = True) -> str:
     client_info = ""
     info_path = os.path.join(nutzerdaten_dir, "info.json")
     if os.path.exists(info_path):
@@ -52,7 +53,8 @@ def build_system_instruction(nutzerdaten_dir: str, is_stage2: bool = False) -> s
             pass
 
     kontenplan_text = "Kein Kontenplan hinterlegt."
-    txt_path = os.path.join(nutzerdaten_dir, "KI_Kontenplan.txt")
+    typ_prefix = "ER" if is_er else "AR"
+    txt_path = os.path.join(nutzerdaten_dir, f"{typ_prefix}_Kontenplan.txt")
     if os.path.exists(txt_path):
         try:
             with open(txt_path, "r", encoding="utf-8") as f:
@@ -63,7 +65,7 @@ def build_system_instruction(nutzerdaten_dir: str, is_stage2: bool = False) -> s
     instruction = "Du bist ein KI-Buchhalter für den italienischen SDI Standard.\n"
     instruction += "Deine Aufgabe ist es, Rechnungs-Artikel einem passenden FIBU-Konto zuzuordnen.\n\n"
     instruction += client_info
-    instruction += "HINTERGRUND (Kontenplan):\n"
+    instruction += f"HINTERGRUND ({typ_prefix}-Kontenplan):\n"
     instruction += kontenplan_text + "\n\n"
     
     instruction += "REGELN FÜR DIE AUSGABE:\n"
@@ -262,7 +264,7 @@ async def process_batch_async(chunk, system_instruction_stage1, system_instructi
             print(f"Fehler in Batch {batch_num}: {e}")
             return False
 
-async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], api_key: str, nutzerdaten_dir: str) -> Dict[str, str]:
+async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], api_key: str, nutzerdaten_dir: str, is_er: bool = True) -> Dict[str, str]:
     if not items_to_classify:
         return {}
         
@@ -277,7 +279,8 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
     # 1. Cache Check
     for item in items_to_classify:
         supplier = item.get('Lieferant', 'Unbekannt')
-        desc = item.get('Beschreibung', '')
+        # Nutze die saubere Beschreibung (ohne Datum etc.) für den Cache, falls vorhanden
+        desc = item.get('Desc_Norm', item.get('Beschreibung', ''))
         cache_key = f"{supplier} | {desc}".strip().upper()
         
         if cache_key in memory:
@@ -300,8 +303,8 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
         print("google-genai ist nicht installiert.")
         return {}
         
-    system_instruction_stage1 = build_system_instruction(nutzerdaten_dir, is_stage2=False)
-    system_instruction_stage2 = build_system_instruction(nutzerdaten_dir, is_stage2=True)
+    system_instruction_stage1 = build_system_instruction(nutzerdaten_dir, is_stage2=False, is_er=is_er)
+    system_instruction_stage2 = build_system_instruction(nutzerdaten_dir, is_stage2=True, is_er=is_er)
     
     chunk_size = 25
     total_items = len(items_for_api)
@@ -342,8 +345,8 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
     
     return results
 
-def ask_gemini_batch(items_to_classify: List[Dict[str, Any]], api_key: str, nutzerdaten_dir: str) -> Dict[str, str]:
+def ask_gemini_batch(items_to_classify: List[Dict[str, Any]], api_key: str, nutzerdaten_dir: str, is_er: bool = True) -> Dict[str, str]:
     """
     Synchronous wrapper for the async AI classification function (Legacy Alias).
     """
-    return asyncio.run(async_classify_items_with_ai(items_to_classify, api_key, nutzerdaten_dir))
+    return asyncio.run(async_classify_items_with_ai(items_to_classify, api_key, nutzerdaten_dir, is_er))
