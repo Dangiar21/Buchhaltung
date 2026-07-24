@@ -34,8 +34,11 @@ def ensure_dashboard_template(base_dir):
         print("Standard Dashboard_Template.xlsx erstellt.")
     return template_path
 
+from sdi_parser import parse_sdi_xml
+
 def parse_invoices(folder_path):
     alle_positionen = []
+    fehler_log = []
     
     for root_dir, _, files in os.walk(folder_path):
         for filename in files:
@@ -43,56 +46,21 @@ def parse_invoices(folder_path):
                 continue
                 
             xml_path = os.path.join(root_dir, filename)
-            try:
-                source = read_xml_or_p7m(xml_path)
-                if source is None:
-                    continue
-                    
-                it = ET.iterparse(source)
-                for _, el in it:
-                    if '}' in el.tag:
-                        el.tag = el.tag.split('}', 1)[1]
-                root = it.root
-                
-                # Lieferant
-                lieferant_node = root.find('.//CedentePrestatore//DatiAnagrafici//Anagrafica')
-                lieferant = "Unbekannt"
-                if lieferant_node is not None:
-                    denom = get_text(lieferant_node, 'Denominazione')
-                    if denom: lieferant = denom
-                    else: lieferant = f"{get_text(lieferant_node, 'Nome')} {get_text(lieferant_node, 'Cognome')}".strip()
-                        
-                # Datum & Rechnungsnummer
-                dati_generali = root.find('.//DatiGeneraliDocumento')
-                datum = get_text(dati_generali, 'Data')
-                nummer = get_text(dati_generali, 'Numero')
-                
-                # Faktor für Gutschriften
-                tipo_documento = get_text(dati_generali, 'TipoDocumento', 'TD01')
-                faktor = -1.0 if tipo_documento in ('TD04', 'TD08') else 1.0
-                
-                dati_linee = root.findall('.//DettaglioLinee')
-                for linea in dati_linee:
-                    desc = get_text(linea, 'Descrizione', 'Keine Beschreibung')
-                    qty_text = get_text(linea, 'Quantita', '1.0')
-                    total_text = get_text(linea, 'PrezzoTotale', '0.0')
-                    
-                    qty = safe_float(qty_text, 1.0, faktor)
-                    total = safe_float(total_text, 0.0, faktor)
-                    
-                    alle_positionen.append({
-                        'id': str(len(alle_positionen)), # Eindeutige ID für KI
-                        'Datei': filename,
-                        'Datum': datum,
-                        'Nummer': nummer,
-                        'Lieferant': lieferant,
-                        'desc': desc, # Beschreibung für KI
-                        'Menge': qty,
-                        'Gesamtpreis': total
-                    })
-                    
-            except Exception as e:
-                print(f"Fehler beim Parsen von {filename}: {e}")
+            
+            # sdi_parser benötigt targa_dict und neue_targas_set (können hier leer/None sein, da für Analyse nicht zwingend)
+            parsed_items = parse_sdi_xml(xml_path, targa_dict=None, neue_targas_set=None, fehler_log=fehler_log, shorten_description=False)
+            
+            for item in parsed_items:
+                alle_positionen.append({
+                    'id': str(len(alle_positionen)), # Eindeutige ID für KI
+                    'Datei': filename,
+                    'Datum': item['Datum'],
+                    'Nummer': item['Rechnungsnummer'],
+                    'Lieferant': item['Lieferant'],
+                    'desc': item['Beschreibung_Full'], # In der Analyse nutzen wir oft die volle Beschreibung
+                    'Menge': item['Menge'],
+                    'Gesamtpreis': item['Gesamtpreis_Roh']
+                })
                 
     return alle_positionen
 

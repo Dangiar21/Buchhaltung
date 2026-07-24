@@ -45,7 +45,9 @@ def build_system_instruction(nutzerdaten_dir: str, is_stage2: bool = False) -> s
         try:
             with open(info_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                client_info = f"Informationen zum Kundenunternehmen:\nName: {data.get('Kundenname', '')}\nBeschreibung: {data.get('Beschreibung', '')}\n\n"
+                desc = data.get('Beschreibung', '').strip()
+                if desc:
+                    client_info = f"Informationen zum Kundenunternehmen:\nBranche/Tätigkeit: {desc}\n\n"
         except Exception:
             pass
 
