@@ -236,6 +236,9 @@ class CacheEditorFrame(ctk.CTkFrame):
                 lieferant = parts[0]
                 beschreibung = parts[1]
                 
+            if not beschreibung or not beschreibung.strip():
+                beschreibung = "(Keine Beschreibung)"
+                
             # Background styling for row (alternate colors maybe, but transparent is fine)
             
             # Status Indicator

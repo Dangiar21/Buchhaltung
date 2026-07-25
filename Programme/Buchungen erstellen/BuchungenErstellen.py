@@ -24,21 +24,44 @@ def ask_shorten_desc_local_fallback():
     pass
 
 from sdi_parser import parse_sdi_xml
+from Programme.GlobalTerms import apply_global_terms
 
-def clean_description_for_dedup(desc):
+def clean_description_for_dedup(desc, global_terms=None):
     if not desc: return ""
     desc = desc.upper()
+    original_for_fallback = re.sub(r'[()/\-:]', ' ', desc).strip()
+    
     desc = re.sub(r'\b(\d{1,2}[\./-]\d{1,2}[\./-]\d{2,4}|\d{4}[\./-]\d{1,2}[\./-]\d{1,2})\b', ' ', desc)
     months_de = r'JANUAR|FEBRUAR|MÄRZ|APRIL|MAI|JUNI|JULI|AUGUST|SEPTEMBER|OKTOBER|NOVEMBER|DEZEMBER|JAN|FEB|MÄR|APR|JUN|JUL|AUG|SEP|OKT|NOV|DEZ'
     months_it = r'GENNAIO|FEBBRAIO|MARZO|APRILE|MAGGIO|GIUGNO|LUGLIO|AGOSTO|SETTEMBRE|OTTOBRE|NOVEMBRE|DICEMBRE|GEN|MAG|GIU|LUG|AGO|SET|OTT|DIC'
     months = rf'\b({months_de}|{months_it})\b'
     desc = re.sub(months + r'(\s*\d{2,4})?', ' ', desc)
     desc = re.sub(r'\b\d+([.,-]\d+)*\s*(KG|G|L|ML|CM|MM|M|STK|STÜCK|PZ|%)\b', ' ', desc)
+    
+    # NEUE REGEX HEURISTIKEN (Nummern-Zerstörer)
+    # 1. Buchstaben-Zahlen-Mix (Seriennummern, Tier IDs wie DE09384, XJ-990)
+    # Matcht Wörter, die mindestens eine Ziffer und mindestens einen Buchstaben enthalten (auch mit Bindestrich/Slash)
+    desc = re.sub(r'\b(?=[A-Z0-9\-/]*[A-Z])(?=[A-Z0-9\-/]*\d)[A-Z0-9\-/]+\b', ' ', desc)
+    
+    # 2. Vokallose Abkürzungen (z.B. BTVX, GMBH, SRL) ab 3 Buchstaben
+    desc = re.sub(r'\b[B-DF-HJ-NP-TV-Z]{3,}\b', ' ', desc)
+    
     desc = re.sub(r'\b\d+\s*$', ' ', desc)
     desc = re.sub(r'[()/\-:]', ' ', desc)
-    return re.sub(r'\s+', ' ', desc).strip()
+    
+    desc = re.sub(r'\s+', ' ', desc).strip()
+    
+    # FALLBACK: Wenn die gesamte Beschreibung gelöscht wurde (z.B. weil es nur eine Tiernummer war)
+    if not desc:
+        desc = re.sub(r'\s+', ' ', original_for_fallback).strip()
+        
+    # 3. Globale Begriffsliste anwenden (Priorität)
+    if global_terms:
+        desc = apply_global_terms(desc, global_terms)
+        
+    return desc
 
-def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True, client_vat_id="", db_konten_cache=None):
+def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True, client_vat_id="", db_konten_cache=None, global_terms=None):
     if db_konten_cache is None: db_konten_cache = {}
     print(f"Lese: {xml_path}")
     
@@ -48,7 +71,7 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
     for item in parsed_items:
         # Konto ermitteln
         # Nutze die bereinigte Beschreibung (ohne Datum etc.) für den Cache
-        clean_desc = clean_description_for_dedup(item['Beschreibung'])
+        clean_desc = clean_description_for_dedup(item['Beschreibung'], global_terms)
         cache_key = f"{item['Lieferant']} | {clean_desc}".strip().upper()
         
         # Fallback auf rohe Beschreibung, falls im Cache noch alte Einträge sind
@@ -126,6 +149,11 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
             
             # --- Regel-System initialisieren ---
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            
+            # --- Globale Begriffe laden ---
+            from Programme.GlobalTerms import load_global_terms
+            global_terms = load_global_terms(base_dir)
+            
             global_rules_path = os.path.join(base_dir, "Systemdaten", "Globale_KontenRegeln.xlsx")
             Buchung_Regeln.ensure_rule_file(global_rules_path)
             
@@ -183,7 +211,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     
             total_files = len(xml_files_to_process)
             for i, xml_file in enumerate(xml_files_to_process):
-                alle_positionen.extend(parse_xml_to_list(xml_file, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache))
+                alle_positionen.extend(parse_xml_to_list(xml_file, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache, global_terms=global_terms))
                 percent = int(((i + 1) / total_files) * 20) if total_files > 0 else 20
                 print(f"[PROGRESS:{percent}]")
                     
@@ -219,7 +247,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         
                     if pos.get('Unterkonto') == '???':
                         desc_raw = pos.get('Beschreibung', '')
-                        desc_norm = clean_description_for_dedup(desc_raw)
+                        desc_norm = clean_description_for_dedup(desc_raw, global_terms)
                         liefer_id = pos.get('Liefer ID', '')
                         kunden_id = pos.get('Kunden ID', '')
                         

@@ -189,7 +189,7 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                 'Beschreibung': desc_short,
                 'Beschreibung_Full': desc, # Nützlich für Analyse
                 'Desc_Norm': desc_norm,
-                'CdC': targa_gefunden if targa_gefunden else "",
+                'CdC': "",
                 'Kennzeichen': targa_gefunden,
                 'Fahrzeugtyp': fahrzeugtyp,
                 'Menge': qty,

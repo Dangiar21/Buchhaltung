@@ -280,7 +280,10 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
     for item in items_to_classify:
         supplier = item.get('Lieferant', 'Unbekannt')
         # Nutze die saubere Beschreibung (ohne Datum etc.) für den Cache, falls vorhanden
-        desc = item.get('Desc_Norm', item.get('Beschreibung', ''))
+        desc = item.get('Desc_Norm', '')
+        if not desc:
+            desc = item.get('Beschreibung', '')
+            
         cache_key = f"{supplier} | {desc}".strip().upper()
         
         if cache_key in memory:

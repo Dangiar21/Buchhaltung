@@ -299,6 +299,23 @@ class BuchhaltungApp(TkDnD):
         else:
             print("Analyse_Config.py konnte nicht importiert werden.")
 
+    def open_globale_begriffe(self):
+        try:
+            from Programme.GlobalTerms import ensure_global_terms_file, get_global_terms_path
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            ensure_global_terms_file(base_dir)
+            
+            setup_path = get_global_terms_path(base_dir)
+            logger.info(f"Öffne {setup_path}...")
+            if os.name == 'nt' or sys.platform == 'win32':
+                os.startfile(setup_path)
+            elif sys.platform == 'darwin':
+                subprocess.run(['open', setup_path], check=True)
+            else:
+                subprocess.run(['xdg-open', setup_path], check=True)
+        except Exception as e:
+            logger.error(f"Fehler beim Öffnen der Globalen Begriffe: {e}")
+
     def build_cache_editor_frame(self):
         if CacheEditorFrame:
             self.cache_editor_frame = CacheEditorFrame(self.container, lambda: self.current_client)
@@ -853,6 +870,13 @@ class BuchhaltungApp(TkDnD):
             except Exception as e:
                 logger.error(f"Fehler beim Lesen des API-Keys: {e}")
                 
+        row_idx += 1
+        
+        # Globale Begriffe Button
+        ctk.CTkLabel(content, text="Deduplizierung:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=20, sticky="w")
+        btn_globale_begriffe = ctk.CTkButton(content, text="Globale Begriffsliste bearbeiten", command=self.open_globale_begriffe)
+        btn_globale_begriffe.grid(row=row_idx, column=1, padx=20, pady=20, sticky="w")
+        
         row_idx += 1
         
         # Save Button
