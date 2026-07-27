@@ -142,7 +142,10 @@ class DatabaseManager:
                 if " | " in cache_key:
                     parts = cache_key.split(" | ", 1)
                     supplier = parts[0]
-                    desc = parts[1] if len(parts) > 1 else ""
+                    desc = parts[1]
+                elif cache_key.endswith(" |"):
+                    supplier = cache_key[:-2].strip()
+                    desc = ""
                 else:
                     supplier = cache_key
                     desc = ""
@@ -200,7 +203,10 @@ class DatabaseManager:
                 if " | " in cache_key:
                     parts = cache_key.split(" | ", 1)
                     supplier = parts[0]
-                    desc = parts[1] if len(parts) > 1 else ""
+                    desc = parts[1]
+                elif cache_key.endswith(" |"):
+                    supplier = cache_key[:-2].strip()
+                    desc = ""
                 else:
                     supplier = cache_key
                     desc = ""
@@ -268,7 +274,10 @@ class DatabaseManager:
         if " | " in cache_key:
             parts = cache_key.split(" | ", 1)
             supplier = parts[0]
-            desc = parts[1] if len(parts) > 1 else ""
+            desc = parts[1]
+        elif cache_key.endswith(" |"):
+            supplier = cache_key[:-2].strip()
+            desc = ""
         else:
             supplier = cache_key
             desc = ""

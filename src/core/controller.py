@@ -5,9 +5,27 @@ import shutil
 import threading
 import logging
 import datetime
-from database import init_db, Kunde
-from validators import ClientDataValidator
+import concurrent.futures
+from src.db.database import init_db, Kunde
+from src.db.validators import ClientDataValidator
 from pydantic import ValidationError
+
+try:
+    from Programme.Buchungen_erstellen.Buchung_KI import ensure_konten_template
+except ImportError:
+    ensure_konten_template = None
+    
+# Try importing module functions directly or passing them.
+# The modules are currently in Programme. We'll import them via sys.path or absolute imports if added.
+import sys
+script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if script_dir not in sys.path:
+    sys.path.append(script_dir)
+sys.path.append(os.path.join(script_dir, 'Programme', 'Buchungen erstellen'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'XML zu Excel'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'Analyse erstellen'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'KI_Training'))
+sys.path.append(os.path.join(script_dir, 'Programme', 'CSV zu Excel'))
 
 try:
     from BuchungenErstellen import run_conversion
@@ -50,6 +68,7 @@ class AppController:
             os.makedirs(self.base_kunden_dir)
         db_path = os.path.join(self.base_kunden_dir, "kunden.db")
         self.session = init_db(db_path)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def get_all_clients(self):
         try:
@@ -139,7 +158,7 @@ class AppController:
             
             if template_name:
                 for typ in ["ER", "AR"]:
-                    template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Systemdaten", "Templates", f"{typ}_{template_name}.txt")
+                    template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "Systemdaten", "Templates", f"{typ}_{template_name}.txt")
                     target_txt_path = os.path.join(info_nutzerdaten_dir, f"{typ}_Kontenplan.txt")
                     if os.path.exists(template_path):
                         shutil.copy2(template_path, target_txt_path)
@@ -174,7 +193,7 @@ class AppController:
             logger.error(f"Fehler beim Speichern der Kundendaten in der DB: {e}")
             return False, name
 
-    def create_backup(self):
+    def create_backup(self, on_finish=None):
         try:
             backup_dir = os.path.join(os.path.dirname(self.base_kunden_dir), "Backups")
             os.makedirs(backup_dir, exist_ok=True)
@@ -191,8 +210,13 @@ class AppController:
                     logger.info(f"\\n✅ Backup erfolgreich erstellt unter:\\n{backup_path}.zip")
                 except Exception as e:
                     logger.error(f"\\n❌ Fehler beim Backup: {e}")
+                    raise e
                     
-            threading.Thread(target=_backup_thread, daemon=True).start()
+            future = self.executor.submit(_backup_thread)
+            if on_finish:
+                future.add_done_callback(lambda f: on_finish())
+            # Add a generic error handler
+            future.add_done_callback(self._future_error_handler)
             return True
         except Exception as e:
             logger.error(f"Fehler beim Initialisieren des Backups: {e}")
@@ -215,34 +239,41 @@ class AppController:
         output_dir = os.path.join(client_dir, "Buchhaltung")
         nutzerdaten_dir = os.path.join(client_dir, "Nutzerdaten")
         
+        func = None
         if active_tool == 'buchung_erstellen':
-            if run_conversion:
-                thread = threading.Thread(target=self._run_task_thread, args=(paths, output_dir, nutzerdaten_dir, run_conversion, on_start, on_finish), daemon=True)
-                thread.start()
-            else:
-                logger.error("Fehler: BuchungenErstellen.py konnte nicht importiert werden.")
+            func = run_conversion
         elif active_tool == 'xml_to_excel':
-            if run_xml_to_excel:
-                thread = threading.Thread(target=self._run_task_thread, args=(paths, output_dir, nutzerdaten_dir, run_xml_to_excel, on_start, on_finish), daemon=True)
-                thread.start()
-            else:
-                logger.error("Fehler: XMLzuExcel.py konnte nicht importiert werden.")
+            func = run_xml_to_excel
         elif active_tool == 'csv_to_excel':
-            if run_csv_to_excel:
-                thread = threading.Thread(target=self._run_task_thread, args=(paths, output_dir, nutzerdaten_dir, run_csv_to_excel, on_start, on_finish), daemon=True)
-                thread.start()
-            else:
-                logger.error("Fehler: CSVzuExcel.py konnte nicht importiert werden.")
+            func = run_csv_to_excel
         elif active_tool == 'analyse':
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            folder = paths[0] if len(paths) > 0 else client_dir
             if run_analyse:
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                folder = paths[0] if len(paths) > 0 else client_dir
-                thread = threading.Thread(target=self._run_task_thread, args=([folder], output_dir, nutzerdaten_dir, lambda p, o, n: run_analyse(p[0], current_client, base_dir, n), on_start, on_finish), daemon=True)
-                thread.start()
-            else:
-                logger.error("Fehler: Analyse_Main.py konnte nicht importiert werden.")
+                func = lambda p, o, n: run_analyse(p[0], current_client, base_dir, n)
+                paths = [folder]
+                
+        if func:
+            future = self.executor.submit(self._run_task_thread, paths, output_dir, nutzerdaten_dir, func, on_start)
+            
+            # Chain the finish callback and error handler
+            def done_callback(f):
+                if on_finish:
+                    # Execute on_finish (which is a GUI callback) - ideally should be threaded back to main thread by UI, but tkinter allows basic stuff
+                    on_finish()
+                self._future_error_handler(f)
+                
+            future.add_done_callback(done_callback)
+        else:
+            logger.error(f"Fehler: Tool {active_tool} konnte nicht geladen werden.")
 
-    def _run_task_thread(self, paths, output_dir, nutzerdaten_dir, func, on_start, on_finish):
+    def _future_error_handler(self, future):
+        try:
+            future.result()
+        except Exception as e:
+            logger.error(f"\\n❌ Unerwarteter Thread-Fehler: {e}")
+
+    def _run_task_thread(self, paths, output_dir, nutzerdaten_dir, func, on_start):
         try:
             if Buchung_KI:
                 Buchung_KI.cancel_requested = False
@@ -260,7 +291,5 @@ class AppController:
                 logger.info("\\n✅ Verarbeitung abgeschlossen.")
                 
         except Exception as e:
-            logger.error(f"\\n❌ Ein unerwarteter Fehler ist aufgetreten: {e}")
-        finally:
-            if on_finish:
-                on_finish()
+            logger.error(f"\\n❌ Ein unerwarteter Fehler ist in der Task-Ausführung aufgetreten: {e}")
+            raise e

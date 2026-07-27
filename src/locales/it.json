@@ -1,0 +1,12 @@
+{
+  "btn_csv_to_excel": "CSV a Excel",
+  "btn_xml_to_excel": "XML a Excel",
+  "btn_buchung_erstellen": "Crea Registrazioni",
+  "btn_analyse": "Crea Analisi",
+  "drop_label": "Trascina qui file XML/P7M o cartelle\n(Drag & Drop)",
+  "drop_label_csv": "Trascina qui file CSV (es. Shopify)\n(Drag & Drop)",
+  "btn_files": "Seleziona file",
+  "btn_folder": "Seleziona cartelle",
+  "welcome_msg": "Benvenuto nella Suite di Contabilità!\nTrascina i tuoi file o cartelle nell'area in alto.",
+  "switch_dark": "Modalità Scura"
+}

@@ -203,6 +203,9 @@ class CacheEditorFrame(ctk.CTkFrame):
         self.row_vars.clear()
         self.entries.clear()
             
+        # Update Master Checkbox text based on count
+        self.master_checkbox.configure(text=f"Alle {len(self.filtered_keys)} sichtbaren auswählen")
+        
         if not self.filtered_keys:
             ctk.CTkLabel(self.scroll_frame, text="Keine Einträge gefunden.", font=ctk.CTkFont(size=14)).grid(row=0, column=0, pady=40, padx=20)
             self.page_label.configure(text="Seite 1 / 1 (0 Einträge)")
@@ -210,10 +213,7 @@ class CacheEditorFrame(ctk.CTkFrame):
             
         max_page = max(0, (len(self.filtered_keys) - 1) // self.items_per_page)
         self.page_label.configure(text=f"Seite {self.current_page + 1} von {max_page + 1}  ({len(self.filtered_keys)} gefiltert)")
-        
-        # Update Master Checkbox text based on count
-        self.master_checkbox.configure(text=f"Alle {len(self.filtered_keys)} sichtbaren auswählen")
-        
+                
         # Headers
         headers = ["Status", "Lieferant", "Beschreibung", "Konto / Kategorie", "Auswahl"]
         for col, text in enumerate(headers):
