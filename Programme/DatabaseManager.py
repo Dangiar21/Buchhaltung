@@ -80,9 +80,6 @@ class DatabaseManager:
                 )
             ''')
             
-            # Legacy KI-Zuweisungen aus der Datenbank löschen (werden jetzt nur noch über den Cache gesteuert)
-            cursor.execute("DELETE FROM kontenregeln WHERE regel_typ IN ('ai_pending', 'ai_confirmed')")
-            
             # Sync Status (Meta-Tabelle)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS sync_status (
@@ -288,44 +285,6 @@ class DatabaseManager:
             cursor.execute(f'DELETE FROM {table} WHERE kunden_id = ? AND supplier = ? AND description = ?', 
                            (kunden_id, supplier, desc))
             conn.commit()
-
-    # --- Migration von JSON -> SQLite ---
-    def migrate_all_json_caches(self, base_dir):
-        kunden_dir = os.path.join(base_dir, "Kunden")
-        if not os.path.exists(kunden_dir):
-            return
-            
-        for kunde in os.listdir(kunden_dir):
-            nutzerdaten = os.path.join(kunden_dir, kunde, "Nutzerdaten")
-            if not os.path.isdir(nutzerdaten):
-                continue
-                
-            # Migrate Analyse
-            analyse_json = os.path.join(nutzerdaten, "Analyse_Memory.json")
-            if os.path.exists(analyse_json):
-                try:
-                    with open(analyse_json, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    if data:
-                        self.save_analyse_cache_batch(kunde, data)
-                        print(f"Migrated Analyse Cache für Kunde: {kunde}")
-                    # Rename to prevent double migration
-                    os.rename(analyse_json, analyse_json + ".migrated")
-                except Exception as e:
-                    print(f"Fehler bei Migration Analyse_Memory für {kunde}: {e}")
-                    
-            # Migrate Konten
-            konten_json = os.path.join(nutzerdaten, "Konten_Memory.json")
-            if os.path.exists(konten_json):
-                try:
-                    with open(konten_json, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    if data:
-                        self.save_konten_cache_batch(kunde, data)
-                        print(f"Migrated Konten Cache für Kunde: {kunde}")
-                    os.rename(konten_json, konten_json + ".migrated")
-                except Exception as e:
-                    print(f"Fehler bei Migration Konten_Memory für {kunde}: {e}")
 
 # Global instance getter
 def get_db(base_dir=None):

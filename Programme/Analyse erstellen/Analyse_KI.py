@@ -30,21 +30,8 @@ except ImportError:
 
 
 def get_api_key(base_dir: str) -> str:
-    try:
-        from dotenv import load_dotenv
-        env_path = os.path.join(base_dir, "Systemdaten", "gemini_key.env")
-        load_dotenv(dotenv_path=env_path)
-    except Exception:
-           import keyring
+    import keyring
     key = keyring.get_password("BuchhaltungApp", "GeminiAPI")
-    
-    if not key:
-        key = os.environ.get("GEMINI_API_KEY")
-        if not key:
-            key_path = os.path.join(base_dir, "Systemdaten", "gemini_api_key.txt")
-            if os.path.exists(key_path):
-                with open(key_path, "r", encoding="utf-8") as f:
-                    key = f.read().strip()
     return key
 
 async def call_gemini_api_with_retry(model_name, system_instruction, prompt_text, batch_num, base_dir, is_waterfall=False):
