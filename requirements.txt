@@ -8,5 +8,7 @@ google-genai
 sqlalchemy
 pydantic
 PyQt6
-
 qtawesome
+keyring
+alembic
+polars
