@@ -30,22 +30,6 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Cache Analyse (Sektorenanalyse)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS cache_analyse (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    kunden_id TEXT NOT NULL,
-                    supplier TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    confirmed INTEGER DEFAULT 0,
-                    UNIQUE(kunden_id, supplier, description)
-                )
-            ''')
-            try:
-                cursor.execute('ALTER TABLE cache_analyse ADD COLUMN confirmed INTEGER DEFAULT 0')
-            except sqlite3.OperationalError:
-                pass
             
             # Cache Konten (FIBU)
             cursor.execute('''
@@ -91,81 +75,13 @@ class DatabaseManager:
             ''')
             
             # Create Indices for blazing fast lookup
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_analyse_lookup ON cache_analyse (kunden_id, supplier, description)')
+
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_konten_lookup ON cache_konten (kunden_id, supplier, description)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_regeln_lookup ON kontenregeln (kunden_id)')
             
             conn.commit()
 
-    # --- Cache Analyse ---
-    def get_analyse_cache(self, kunden_id: str) -> Dict[str, Any]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT supplier, description, result_json FROM cache_analyse WHERE kunden_id = ?', (kunden_id,))
-            rows = cursor.fetchall()
-            
-        memory = {}
-        for supplier, desc, result_json in rows:
-            cache_key = f"{supplier} | {desc}".strip().upper()
-            try:
-                memory[cache_key] = json.loads(result_json)
-            except Exception as e:
-                print(f'Fehler: {e}')
-                memory[cache_key] = result_json
-        return memory
 
-    def get_analyse_cache_full(self, kunden_id: str) -> Dict[str, Any]:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT supplier, description, result_json, confirmed FROM cache_analyse WHERE kunden_id = ?', (kunden_id,))
-            rows = cursor.fetchall()
-            
-        memory = {}
-        for supplier, desc, result_json, confirmed in rows:
-            cache_key = f"{supplier} | {desc}".strip().upper()
-            try:
-                val = json.loads(result_json)
-            except Exception as e:
-                val = result_json
-            memory[cache_key] = {'value': val, 'confirmed': bool(confirmed)}
-        return memory
-
-    def save_analyse_cache_batch(self, kunden_id: str, new_entries: Dict[str, Any]):
-        if not new_entries:
-            return
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            for cache_key, data in new_entries.items():
-                if " | " in cache_key:
-                    parts = cache_key.split(" | ", 1)
-                    supplier = parts[0]
-                    desc = parts[1]
-                elif cache_key.endswith(" |"):
-                    supplier = cache_key[:-2].strip()
-                    desc = ""
-                else:
-                    supplier = cache_key
-                    desc = ""
-                    
-                if isinstance(data, dict) and 'value' in data and 'confirmed' in data:
-                    result = data['value']
-                    confirmed = 1 if data['confirmed'] else 0
-                else:
-                    result = data
-                    confirmed = 0
-                    
-                result_json = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
-                
-                # Upsert
-                cursor.execute('''
-                    INSERT INTO cache_analyse (kunden_id, supplier, description, result_json, confirmed)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(kunden_id, supplier, description) DO UPDATE SET 
-                    result_json = excluded.result_json,
-                    confirmed = excluded.confirmed
-                ''', (kunden_id, supplier, desc, result_json, confirmed))
-            conn.commit()
-            
     # --- Cache Konten ---
     def get_konten_cache(self, kunden_id: str) -> Dict[str, str]:
         with self.get_connection() as conn:
@@ -229,11 +145,8 @@ class DatabaseManager:
     def get_unconfirmed_status_for_all(self) -> set:
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT DISTINCT kunden_id FROM cache_analyse WHERE confirmed = 0')
-            unconfirmed_clients = set(row[0] for row in cursor.fetchall())
-            
             cursor.execute('SELECT DISTINCT kunden_id FROM cache_konten WHERE confirmed = 0')
-            unconfirmed_clients.update(row[0] for row in cursor.fetchall())
+            unconfirmed_clients = set(row[0] for row in cursor.fetchall())
             
         return unconfirmed_clients
 
@@ -272,7 +185,7 @@ class DatabaseManager:
 
     # --- UI Cache Editor Helpers ---
     def delete_all_cache(self, cache_type: str, kunden_id: str):
-        table = "cache_analyse" if cache_type == "Sektorenanalyse" else "cache_konten"
+        table = "cache_konten"
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f'DELETE FROM {table} WHERE kunden_id = ?', (kunden_id,))
@@ -290,7 +203,7 @@ class DatabaseManager:
             supplier = cache_key
             desc = ""
             
-        table = "cache_analyse" if cache_type == "Sektorenanalyse" else "cache_konten"
+        table = "cache_konten"
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(f'DELETE FROM {table} WHERE kunden_id = ? AND supplier = ? AND description = ?', 

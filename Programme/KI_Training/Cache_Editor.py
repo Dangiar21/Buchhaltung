@@ -228,7 +228,7 @@ class CacheEditorFrame(QWidget):
         filter_layout.setSpacing(10)
         
         self.cache_type_var = QComboBox()
-        self.cache_type_var.addItems(["Sektorenanalyse", "FIBU Kontierung"])
+        self.cache_type_var.addItems(["FIBU Kontierung"])
         self.cache_type_var.currentTextChanged.connect(self.load_data)
         self.cache_type_var.setMinimumWidth(160)
         filter_layout.addWidget(self.cache_type_var)
@@ -353,10 +353,7 @@ class CacheEditorFrame(QWidget):
         try:
             db = get_db()
             cache_type = self.cache_type_var.currentText()
-            if cache_type == "Sektorenanalyse":
-                self.current_data = db.get_analyse_cache_full(client)
-            else:
-                self.current_data = db.get_konten_cache_full(client)
+            self.current_data = db.get_konten_cache_full(client)
         except Exception as e:
             self.show_status(f"Fehler: {e}", "red")
             return
@@ -428,20 +425,14 @@ class CacheEditorFrame(QWidget):
                 for row_data in self.table_model._data:
                     if row_data[0] == key:
                         val_str = row_data[4]
-                        try:
-                            val = json.loads(val_str) if cache_type == "Sektorenanalyse" else val_str
-                        except:
-                            val = val_str
+                        val = val_str
                         break
                         
                 new_entries[key] = {'value': val, 'confirmed': True}
                 self.current_data[key]['confirmed'] = True
                 self.current_data[key]['value'] = val
                 
-        if cache_type == "Sektorenanalyse":
-            db.save_analyse_cache_batch(client, new_entries)
-        else:
-            db.save_konten_cache_batch(client, new_entries)
+        db.save_konten_cache_batch(client, new_entries)
             
         self.apply_filters_and_render()
         self.show_status(f"{len(new_entries)} Einträge bestätigt!", "green")
@@ -479,21 +470,14 @@ class CacheEditorFrame(QWidget):
             val_str = row_data[4]
             confirmed = row_data[1]
             try:
-                if cache_type == "Sektorenanalyse":
-                    parsed = json.loads(val_str)
-                else:
-                    parsed = val_str
+                parsed = val_str
                 new_entries[key] = {'value': parsed, 'confirmed': confirmed}
                 self.current_data[key]['value'] = parsed
             except:
                 new_entries[key] = {'value': val_str, 'confirmed': confirmed}
                 self.current_data[key]['value'] = val_str
                 
-        if new_entries:
-            if cache_type == "Sektorenanalyse":
-                db.save_analyse_cache_batch(client, new_entries)
-            else:
-                db.save_konten_cache_batch(client, new_entries)
+            db.save_konten_cache_batch(client, new_entries)
                 
         self.show_status("Manuelle Änderungen gespeichert!", "green")
         self.apply_filters_and_render()
@@ -531,20 +515,14 @@ class CacheEditorFrame(QWidget):
             key = f"{lieferant} | {desc}".upper()
             cache_type = self.cache_type_var.currentText()
             try:
-                if cache_type == "Sektorenanalyse":
-                    parsed_val = json.loads(val)
-                else:
-                    parsed_val = val
+                parsed_val = val
             except:
                 parsed_val = val
                 
             new_entry = {key: {'value': parsed_val, 'confirmed': True}}
             
             db = get_db()
-            if cache_type == "Sektorenanalyse":
-                db.save_analyse_cache_batch(client, new_entry)
-            else:
-                db.save_konten_cache_batch(client, new_entry)
+            db.save_konten_cache_batch(client, new_entry)
                 
             self.current_data[key] = new_entry[key]
             

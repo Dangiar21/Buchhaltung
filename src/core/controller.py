@@ -23,7 +23,7 @@ if script_dir not in sys.path:
     sys.path.append(script_dir)
 sys.path.append(os.path.join(script_dir, 'Programme', 'Buchungen erstellen'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'XML zu Excel'))
-sys.path.append(os.path.join(script_dir, 'Programme', 'Analyse erstellen'))
+
 sys.path.append(os.path.join(script_dir, 'Programme', 'KI_Training'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'CSV zu Excel'))
 
@@ -42,10 +42,7 @@ try:
 except ImportError:
     run_csv_to_excel = None
 
-try:
-    from Analyse_Main import run_analyse
-except ImportError:
-    run_analyse = None
+
 
 try:
     import Buchung_KI
@@ -54,10 +51,7 @@ except ImportError:
     Buchung_KI = None
     ensure_konten_template = None
 
-try:
-    import Analyse_KI
-except ImportError:
-    Analyse_KI = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -226,8 +220,7 @@ class AppController:
         logger.info("\\n[!] Abbruch angefordert! Die aktuelle Verarbeitung wird nach dem laufenden Batch beendet und gespeichert.")
         if Buchung_KI:
             Buchung_KI.cancel_requested = True
-        if Analyse_KI:
-            Analyse_KI.cancel_requested = True
+
 
     def process_paths(self, paths, active_tool, current_client, on_start=None, on_finish=None):
         if not current_client or current_client == "Kein Kunde":
@@ -246,12 +239,7 @@ class AppController:
             func = run_xml_to_excel
         elif active_tool == 'csv_to_excel':
             func = run_csv_to_excel
-        elif active_tool == 'analyse':
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            folder = paths[0] if len(paths) > 0 else client_dir
-            if run_analyse:
-                func = lambda p, o, n: run_analyse(p[0], current_client, base_dir, n)
-                paths = [folder]
+
                 
         if func:
             future = self.executor.submit(self._run_task_thread, paths, output_dir, nutzerdaten_dir, func, on_start)
@@ -277,15 +265,14 @@ class AppController:
         try:
             if Buchung_KI:
                 Buchung_KI.cancel_requested = False
-            if Analyse_KI:
-                Analyse_KI.cancel_requested = False
+
                 
             if on_start:
                 on_start()
 
             func(paths, output_dir=output_dir, nutzerdaten_dir=nutzerdaten_dir)
             
-            if (Buchung_KI and getattr(Buchung_KI, 'cancel_requested', False)) or (Analyse_KI and getattr(Analyse_KI, 'cancel_requested', False)):
+            if Buchung_KI and getattr(Buchung_KI, 'cancel_requested', False):
                 logger.warning("\\n⚠️ Verarbeitung wurde vorzeitig abgebrochen. Die bisherigen Ergebnisse wurden gespeichert.")
             else:
                 logger.info("\\n✅ Verarbeitung abgeschlossen.")

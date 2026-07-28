@@ -161,11 +161,7 @@ class BuchhaltungApp(QMainWindow):
         self.sidebar_btn_3.clicked.connect(lambda: self.show_tool('buchung_erstellen'))
         self.sidebar_layout.addWidget(self.sidebar_btn_3)
         
-        self.sidebar_btn_4 = QPushButton(translator.get(self.lang, 'btn_analyse'))
-        self.sidebar_btn_4.setObjectName("SidebarBtn")
-        self.sidebar_btn_4.setIcon(qta.icon('fa5s.chart-bar', color='#8c98a4'))
-        self.sidebar_btn_4.clicked.connect(lambda: self.show_tool('analyse'))
-        self.sidebar_layout.addWidget(self.sidebar_btn_4)
+
 
         # System Section
         lbl_system = QLabel("SYSTEM")
@@ -198,7 +194,7 @@ class BuchhaltungApp(QMainWindow):
 
         # Build Tool Frames
         self.tool_frames = {}
-        for tool_id, has_setup in [('buchung_erstellen', False), ('xml_to_excel', False), ('csv_to_excel', False), ('analyse', True)]:
+        for tool_id, has_setup in [('buchung_erstellen', False), ('xml_to_excel', False), ('csv_to_excel', False)]:
             frame = QWidget()
             lbl, btn_f, btn_d, btn_c, log_tb, prog_bar = build_tool_frame(frame, self, tool_id, has_setup)
             self.container.addWidget(frame)
@@ -253,7 +249,7 @@ class BuchhaltungApp(QMainWindow):
             (self.sidebar_btn_2, 'xml_to_excel'),
             (self.sidebar_btn_csv, 'csv_to_excel'),
             (self.sidebar_btn_3, 'buchung_erstellen'),
-            (self.sidebar_btn_4, 'analyse'),
+
             (self.sidebar_btn_5, 'cache_editor'),
             (self.btn_settings, 'settings')
         ]
@@ -268,7 +264,7 @@ class BuchhaltungApp(QMainWindow):
             elif btn == self.sidebar_btn_2: icon_name = 'fa5s.file-excel'
             elif btn == self.sidebar_btn_csv: icon_name = 'fa5s.file-csv'
             elif btn == self.sidebar_btn_3: icon_name = 'fa5s.edit'
-            elif btn == self.sidebar_btn_4: icon_name = 'fa5s.chart-bar'
+
             elif btn == self.sidebar_btn_5: icon_name = 'fa5s.database'
             elif btn == self.btn_settings: icon_name = 'fa5s.cog'
             
@@ -310,7 +306,7 @@ class BuchhaltungApp(QMainWindow):
         self.sidebar_btn_2.setText(translator.get(self.lang, 'btn_xml_to_excel'))
         self.sidebar_btn_csv.setText(translator.get(self.lang, 'btn_csv_to_excel', default='CSV zu Excel'))
         self.sidebar_btn_3.setText(translator.get(self.lang, 'btn_buchung_erstellen'))
-        self.sidebar_btn_4.setText(translator.get(self.lang, 'btn_analyse'))
+
         self.settings_frame.update_ui_text(self.lang)
             
         for tid, t in self.tool_frames.items():

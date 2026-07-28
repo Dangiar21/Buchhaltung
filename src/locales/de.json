@@ -2,7 +2,6 @@
   "btn_csv_to_excel": "CSV zu Excel",
   "btn_xml_to_excel": "XML zu Excel",
   "btn_buchung_erstellen": "Buchung erstellen",
-  "btn_analyse": "Analyse erstellen",
   "drop_label": "Ordner oder XML/P7M Dateien hier ablegen\n(Drag & Drop)",
   "drop_label_csv": "CSV Dateien (z.B. Shopify) hier ablegen\n(Drag & Drop)",
   "btn_files": "Dateien auswählen",
