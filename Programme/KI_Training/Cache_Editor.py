@@ -1,7 +1,14 @@
 import os
 import json
-import customtkinter as ctk
 import sys
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
+    QLineEdit, QPushButton, QTableView, QHeaderView, QFrame,
+    QCheckBox, QMessageBox, QDialog, QFormLayout, QAbstractItemView,
+    QStyledItemDelegate, QStyleOptionButton, QStyle, QApplication
+)
+from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal, QTimer
+from PyQt6.QtGui import QFont, QColor
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 prog_dir = os.path.dirname(script_dir)
@@ -13,96 +20,186 @@ try:
 except ImportError:
     pass
 
-class CacheEditorFrame(ctk.CTkFrame):
+class CacheTableModel(QAbstractTableModel):
+    def __init__(self, data=None):
+        super().__init__()
+        self._data = data or [] # List of tuples: (key, status, lieferant, beschreibung, wert, data_obj)
+        self.headers = ["Status", "Lieferant", "Beschreibung", "Konto / Kategorie"]
+        
+    def set_data(self, data):
+        self.beginResetModel()
+        self._data = data
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._data)
+        
+    def columnCount(self, parent=QModelIndex()):
+        return len(self.headers)
+        
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+            
+        row = index.row()
+        col = index.column()
+        item = self._data[row]
+        
+        if role == Qt.ItemDataRole.DisplayRole or role == Qt.ItemDataRole.EditRole:
+            if col == 0:
+                return "✅" if item[1] else "⚠️"
+            elif col == 1:
+                return item[2]
+            elif col == 2:
+                return item[3]
+            elif col == 3:
+                return item[4]
+                
+        elif role == Qt.ItemDataRole.TextAlignmentRole:
+            if col == 0:
+                return Qt.AlignmentFlag.AlignCenter
+                
+        elif role == Qt.ItemDataRole.ForegroundRole:
+            if col == 0:
+                return QColor("green") if item[1] else QColor("orange")
+                
+        return None
+        
+    def headerData(self, section, orientation, role):
+        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
+            return self.headers[section]
+        return None
+
+    def flags(self, index):
+        flags = super().flags(index)
+        if index.column() == 3: # Make "Wert" column editable
+            flags |= Qt.ItemFlag.ItemIsEditable
+        return flags
+
+    def setData(self, index, value, role):
+        if index.isValid() and role == Qt.ItemDataRole.EditRole and index.column() == 3:
+            row = index.row()
+            # Update internal data
+            old_item = list(self._data[row])
+            old_item[4] = value
+            self._data[row] = tuple(old_item)
+            self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole])
+            return True
+        return False
+
+class CacheEditorFrame(QWidget):
     def __init__(self, master, current_client_callback):
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master)
         self.current_client_callback = current_client_callback
         
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(20, 20, 20, 20)
+        self.main_layout.setSpacing(15)
         
         # --- 1. Header (Title) ---
-        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
+        self.header_frame = QHBoxLayout()
         
-        self.title_label = ctk.CTkLabel(self.header_frame, text="🧠 KI-Training (Gedächtnis-Editor)", font=ctk.CTkFont(size=22, weight="bold"))
-        self.title_label.pack(side="left")
+        self.title_label = QLabel("🧠 KI-Training (Gedächtnis-Editor)")
+        font = QFont()
+        font.setPointSize(22)
+        font.setBold(True)
+        self.title_label.setFont(font)
+        self.header_frame.addWidget(self.title_label)
         
-        self.status_label = ctk.CTkLabel(self.header_frame, text="", font=ctk.CTkFont(weight="bold"))
-        self.status_label.pack(side="right", padx=10)
+        self.header_frame.addStretch()
+        
+        self.status_label = QLabel("")
+        self.status_label.setFont(QFont("", -1, QFont.Weight.Bold))
+        self.header_frame.addWidget(self.status_label)
+        
+        self.main_layout.addLayout(self.header_frame)
         
         # --- 2. Controls Card ---
-        self.controls_card = ctk.CTkFrame(self, fg_color=("white", "gray20"), corner_radius=10, border_width=1, border_color=("gray85", "gray15"))
-        self.controls_card.grid(row=1, column=0, padx=20, pady=(0, 15), sticky="ew")
-        self.controls_card.grid_columnconfigure(5, weight=1)
+        self.controls_card = QFrame()
+        self.controls_card.setObjectName("ControlsCard")
+        self.controls_card.setStyleSheet("""
+            #ControlsCard {
+                background-color: palette(window);
+                border-radius: 10px;
+                border: 1px solid palette(mid);
+            }
+        """)
+        controls_layout = QVBoxLayout(self.controls_card)
+        controls_layout.setContentsMargins(15, 15, 15, 15)
         
         # Row 1: Such & Filter
-        self.cache_type_var = ctk.StringVar(value="Sektorenanalyse")
-        ctk.CTkOptionMenu(self.controls_card, values=["Sektorenanalyse", "FIBU Kontierung"], variable=self.cache_type_var, command=self.load_data, width=150).grid(row=0, column=0, padx=10, pady=10)
+        filter_layout = QHBoxLayout()
         
-        self.filter_var = ctk.StringVar(value="Alle")
-        ctk.CTkOptionMenu(self.controls_card, values=["Alle", "Bestätigt", "Unbestätigt"], variable=self.filter_var, command=self.apply_filters_and_render, width=120).grid(row=0, column=1, padx=10, pady=10)
+        self.cache_type_var = QComboBox()
+        self.cache_type_var.addItems(["Sektorenanalyse", "FIBU Kontierung"])
+        self.cache_type_var.currentTextChanged.connect(self.load_data)
+        filter_layout.addWidget(self.cache_type_var)
         
-        self.sort_var = ctk.StringVar(value="A-Z (Lieferant)")
-        ctk.CTkOptionMenu(self.controls_card, values=["A-Z (Lieferant)", "Z-A (Lieferant)", "A-Z (Konto)"], variable=self.sort_var, command=self.apply_filters_and_render, width=140).grid(row=0, column=2, padx=10, pady=10)
+        self.filter_var = QComboBox()
+        self.filter_var.addItems(["Alle", "Bestätigt", "Unbestätigt"])
+        self.filter_var.currentTextChanged.connect(self.apply_filters_and_render)
+        filter_layout.addWidget(self.filter_var)
         
-        self.search_var = ctk.StringVar(value="")
-        self.search_entry = ctk.CTkEntry(self.controls_card, placeholder_text="Suchen...", textvariable=self.search_var, width=200)
-        self.search_entry.grid(row=0, column=3, padx=10, pady=10)
-        self.search_entry.bind("<KeyRelease>", self.apply_filters_and_render)
+        self.search_entry = QLineEdit()
+        self.search_entry.setPlaceholderText("Suchen...")
+        self.search_entry.textChanged.connect(self.apply_filters_and_render)
+        filter_layout.addWidget(self.search_entry)
         
-        ctk.CTkButton(self.controls_card, text="↻", width=40, command=self.load_data).grid(row=0, column=4, padx=5, pady=10)
+        btn_refresh = QPushButton("↻")
+        btn_refresh.setFixedWidth(40)
+        btn_refresh.clicked.connect(self.load_data)
+        filter_layout.addWidget(btn_refresh)
+        
+        controls_layout.addLayout(filter_layout)
         
         # Row 2: Batch Actions
-        batch_frame = ctk.CTkFrame(self.controls_card, fg_color="transparent")
-        batch_frame.grid(row=1, column=0, columnspan=6, sticky="ew", padx=10, pady=(0, 10))
+        batch_layout = QHBoxLayout()
         
-        self.master_check_var = ctk.BooleanVar(value=False)
-        self.master_checkbox = ctk.CTkCheckBox(batch_frame, text="Alle gefilterten auswählen", variable=self.master_check_var, command=self.toggle_select_all, font=ctk.CTkFont(weight="bold"))
-        self.master_checkbox.pack(side="left", padx=5)
+        self.batch_confirm_btn = QPushButton("[✓] Ausgewählte bestätigen")
+        self.batch_confirm_btn.setStyleSheet("background-color: #2b9e4a; color: white;")
+        self.batch_confirm_btn.clicked.connect(self.batch_confirm)
+        batch_layout.addWidget(self.batch_confirm_btn)
         
-        self.batch_confirm_btn = ctk.CTkButton(batch_frame, text="[✓] Ausgewählte bestätigen", command=self.batch_confirm, fg_color="#2b9e4a", hover_color="#217a39")
-        self.batch_confirm_btn.pack(side="left", padx=15)
+        self.batch_delete_btn = QPushButton("[✗] Ausgewählte löschen")
+        self.batch_delete_btn.setStyleSheet("background-color: #cc0000; color: white;")
+        self.batch_delete_btn.clicked.connect(self.batch_delete)
+        batch_layout.addWidget(self.batch_delete_btn)
         
-        self.batch_delete_btn = ctk.CTkButton(batch_frame, text="[✗] Ausgewählte löschen", command=self.batch_delete, fg_color="#cc0000", hover_color="#990000")
-        self.batch_delete_btn.pack(side="left", padx=5)
+        batch_layout.addStretch()
         
-        self.save_btn = ctk.CTkButton(batch_frame, text="💾 Manuelle Änderungen Speichern", command=self.save_data, fg_color="#e58e26", hover_color="#b36916")
-        self.save_btn.pack(side="right", padx=5)
+        self.save_btn = QPushButton("💾 Manuelle Änderungen Speichern")
+        self.save_btn.setStyleSheet("background-color: #e58e26; color: white;")
+        self.save_btn.clicked.connect(self.save_data)
+        batch_layout.addWidget(self.save_btn)
         
-        self.add_btn = ctk.CTkButton(batch_frame, text="➕ Neuer Eintrag", command=self.add_new_entry, fg_color="#3498db", hover_color="#2980b9")
-        self.add_btn.pack(side="right", padx=15)
+        self.add_btn = QPushButton("➕ Neuer Eintrag")
+        self.add_btn.setStyleSheet("background-color: #3498db; color: white;")
+        self.add_btn.clicked.connect(self.add_new_entry)
+        batch_layout.addWidget(self.add_btn)
+        
+        controls_layout.addLayout(batch_layout)
+        self.main_layout.addWidget(self.controls_card)
         
         # --- 3. Data Area ---
-        self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color=("gray90", "gray15"), corner_radius=10)
-        self.scroll_frame.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="nsew")
-        self.scroll_frame.grid_columnconfigure(3, weight=1)
+        self.table_view = QTableView()
+        self.table_model = CacheTableModel()
+        self.table_view.setModel(self.table_model)
         
-        # --- 4. Pagination ---
-        self.pagination_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.pagination_frame.grid(row=3, column=0, padx=20, pady=(0, 20), sticky="ew")
+        self.table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table_view.setAlternatingRowColors(True)
+        self.table_view.horizontalHeader().setStretchLastSection(True)
+        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table_view.setSortingEnabled(True) 
         
-        self.prev_btn = ctk.CTkButton(self.pagination_frame, text="< Zurück", command=self.prev_page, width=100)
-        self.prev_btn.pack(side="left")
+        self.main_layout.addWidget(self.table_view, stretch=1)
         
-        self.page_label = ctk.CTkLabel(self.pagination_frame, text="Seite 1 / 1", font=ctk.CTkFont(weight="bold"))
-        self.page_label.pack(side="left", expand=True)
-        
-        self.next_btn = ctk.CTkButton(self.pagination_frame, text="Weiter >", command=self.next_page, width=100)
-        self.next_btn.pack(side="right")
-        
-        # State Variables
-        self.entries = {}
         self.current_data = {}
-        self.filtered_keys = []
-        self.selected_keys = set()
-        self.current_page = 0
-        self.items_per_page = 50
-        self.row_vars = {}
-
+        
     def show_status(self, text, color="text"):
-        self.status_label.configure(text=text, text_color=color)
-        self.after(4000, lambda: self.status_label.configure(text=""))
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {color};")
+        QTimer.singleShot(4000, lambda: self.status_label.setText(""))
         
     def get_client(self):
         client = self.current_client_callback()
@@ -113,39 +210,33 @@ class CacheEditorFrame(ctk.CTkFrame):
     def load_data(self, *args):
         client = self.get_client()
         if not client:
-            for widget in self.scroll_frame.winfo_children(): widget.destroy()
-            ctk.CTkLabel(self.scroll_frame, text="Bitte zuerst einen Kunden in der Seitenleiste auswählen!", font=ctk.CTkFont(size=16)).grid(row=0, column=0, pady=40, padx=20)
+            self.table_model.set_data([])
+            self.show_status("Bitte zuerst einen Kunden auswählen!", "red")
             return
             
         try:
             db = get_db()
-            cache_type = self.cache_type_var.get()
+            cache_type = self.cache_type_var.currentText()
             if cache_type == "Sektorenanalyse":
                 self.current_data = db.get_analyse_cache_full(client)
             else:
                 self.current_data = db.get_konten_cache_full(client)
         except Exception as e:
-            for widget in self.scroll_frame.winfo_children(): widget.destroy()
-            ctk.CTkLabel(self.scroll_frame, text=f"Fehler beim Laden: {e}", text_color="red").grid(row=0, column=0, pady=20)
+            self.show_status(f"Fehler: {e}", "red")
             return
             
         self.apply_filters_and_render()
         self.show_status("Daten geladen", "green")
 
     def apply_filters_and_render(self, *args):
-        self.current_page = 0
-        self.master_check_var.set(False)
-        self.selected_keys.clear()
+        current_filter = self.filter_var.currentText()
+        search_text = self.search_entry.text().lower().strip()
         
-        current_filter = self.filter_var.get()
-        search_text = self.search_var.get().lower().strip()
-        sort_order = self.sort_var.get()
-        
-        temp_keys = []
-        
+        table_data = []
         for key, data_obj in self.current_data.items():
             confirmed = data_obj['confirmed']
-            val_str = str(data_obj['value']).lower()
+            value = data_obj['value']
+            val_str = json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value)
             key_lower = key.lower()
             
             # Status Filter
@@ -154,141 +245,60 @@ class CacheEditorFrame(ctk.CTkFrame):
             
             # Search Filter
             if search_text:
-                if search_text not in key_lower and search_text not in val_str:
+                if search_text not in key_lower and search_text not in val_str.lower():
                     continue
                     
-            temp_keys.append(key)
-            
-        # Sorting
-        if sort_order == "A-Z (Lieferant)":
-            temp_keys.sort(key=lambda x: x.split(" | ")[0] if " | " in x else x)
-        elif sort_order == "Z-A (Lieferant)":
-            temp_keys.sort(key=lambda x: x.split(" | ")[0] if " | " in x else x, reverse=True)
-        elif sort_order == "A-Z (Konto)":
-            temp_keys.sort(key=lambda x: str(self.current_data[x]['value']))
-            
-        self.filtered_keys = temp_keys
-        self.render_page()
-
-    def toggle_select_all(self):
-        is_checked = self.master_check_var.get()
-        if is_checked:
-            self.selected_keys = set(self.filtered_keys)
-        else:
-            self.selected_keys.clear()
-        self.render_page()
-        
-    def toggle_single_select(self, key, var):
-        if var.get():
-            self.selected_keys.add(key)
-        else:
-            self.selected_keys.discard(key)
-            self.master_check_var.set(False)
-
-    def prev_page(self):
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.render_page()
-            
-    def next_page(self):
-        max_page = max(0, (len(self.filtered_keys) - 1) // self.items_per_page)
-        if self.current_page < max_page:
-            self.current_page += 1
-            self.render_page()
-            
-    def render_page(self):
-        # Clear
-        for widget in self.scroll_frame.winfo_children():
-            widget.destroy()
-        self.row_vars.clear()
-        self.entries.clear()
-            
-        # Update Master Checkbox text based on count
-        self.master_checkbox.configure(text=f"Alle {len(self.filtered_keys)} sichtbaren auswählen")
-        
-        if not self.filtered_keys:
-            ctk.CTkLabel(self.scroll_frame, text="Keine Einträge gefunden.", font=ctk.CTkFont(size=14)).grid(row=0, column=0, pady=40, padx=20)
-            self.page_label.configure(text="Seite 1 / 1 (0 Einträge)")
-            return
-            
-        max_page = max(0, (len(self.filtered_keys) - 1) // self.items_per_page)
-        self.page_label.configure(text=f"Seite {self.current_page + 1} von {max_page + 1}  ({len(self.filtered_keys)} gefiltert)")
-                
-        # Headers
-        headers = ["Status", "Lieferant", "Beschreibung", "Konto / Kategorie", "Auswahl"]
-        for col, text in enumerate(headers):
-            ctk.CTkLabel(self.scroll_frame, text=text, font=ctk.CTkFont(weight="bold", size=13), text_color="gray50").grid(row=0, column=col, padx=10, pady=(10, 5), sticky="w")
-            
-        start_idx = self.current_page * self.items_per_page
-        end_idx = start_idx + self.items_per_page
-        page_keys = self.filtered_keys[start_idx:end_idx]
-        
-        row = 1
-        for key in page_keys:
-            data_obj = self.current_data[key]
-            value = data_obj['value']
-            confirmed = data_obj['confirmed']
-            
             lieferant = key
-            beschreibung = "-"
+            beschreibung = "(Keine Beschreibung)"
             if " | " in key:
                 parts = key.split(" | ", 1)
                 lieferant = parts[0]
-                beschreibung = parts[1]
+                beschreibung = parts[1] if parts[1].strip() else "(Keine Beschreibung)"
                 
-            if not beschreibung or not beschreibung.strip():
-                beschreibung = "(Keine Beschreibung)"
-                
-            # Background styling for row (alternate colors maybe, but transparent is fine)
+            table_data.append((key, confirmed, lieferant, beschreibung, val_str, data_obj))
             
-            # Status Indicator
-            if confirmed:
-                status_lbl = ctk.CTkLabel(self.scroll_frame, text="✅", text_color="green", width=30)
-            else:
-                status_lbl = ctk.CTkLabel(self.scroll_frame, text="⚠️", text_color="orange", width=30)
-            status_lbl.grid(row=row, column=0, padx=5, pady=8)
-            
-            # Texts
-            ctk.CTkLabel(self.scroll_frame, text=lieferant, wraplength=180, justify="left").grid(row=row, column=1, padx=10, pady=8, sticky="w")
-            ctk.CTkLabel(self.scroll_frame, text=beschreibung, wraplength=250, justify="left").grid(row=row, column=2, padx=10, pady=8, sticky="w")
-            
-            # Value Entry (Editable)
-            val_str = json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value)
-            entry = ctk.CTkEntry(self.scroll_frame, width=180)
-            entry.insert(0, val_str)
-            entry.grid(row=row, column=3, padx=10, pady=8, sticky="w")
-            
-            # Checkbox
-            var = ctk.BooleanVar(value=(key in self.selected_keys))
-            chk = ctk.CTkCheckBox(self.scroll_frame, text="", variable=var, width=20, command=lambda k=key, v=var: self.toggle_single_select(k, v))
-            chk.grid(row=row, column=4, padx=10, pady=8)
-            self.row_vars[key] = var
-            
-            self.entries[key] = {"entry": entry, "confirmed": confirmed}
-            row += 1
+        # Default Sort by Lieferant A-Z
+        table_data.sort(key=lambda x: x[2].lower())
+        
+        self.table_model.set_data(table_data)
+        
+        # Resize columns after populating
+        self.table_view.resizeColumnToContents(0) 
+        if self.table_view.columnWidth(1) < 150: self.table_view.setColumnWidth(1, 150)
+        if self.table_view.columnWidth(2) < 200: self.table_view.setColumnWidth(2, 200)
+
+    def get_selected_keys(self):
+        indexes = self.table_view.selectionModel().selectedRows()
+        keys = set()
+        for idx in indexes:
+            row = idx.row()
+            if row < len(self.table_model._data):
+                keys.add(self.table_model._data[row][0]) 
+        return keys
 
     def batch_confirm(self):
-        if not self.selected_keys:
+        selected = self.get_selected_keys()
+        if not selected:
             self.show_status("Nichts ausgewählt!", "orange")
             return
             
         client = self.get_client()
         db = get_db()
-        cache_type = self.cache_type_var.get()
+        cache_type = self.cache_type_var.currentText()
         new_entries = {}
         
-        for key in self.selected_keys:
+        for key in selected:
             if key in self.current_data:
                 val = self.current_data[key]['value']
-                # If they edited the entry on screen, we should grab the newest value, but batch confirm is bulk.
-                # Let's check if it's on screen to grab the entry value:
-                if key in self.entries:
-                    val_str = self.entries[key]['entry'].get()
-                    try:
-                        val = json.loads(val_str) if cache_type == "Sektorenanalyse" else val_str
-                    except:
-                        val = val_str
-                
+                for row_data in self.table_model._data:
+                    if row_data[0] == key:
+                        val_str = row_data[4]
+                        try:
+                            val = json.loads(val_str) if cache_type == "Sektorenanalyse" else val_str
+                        except:
+                            val = val_str
+                        break
+                        
                 new_entries[key] = {'value': val, 'confirmed': True}
                 self.current_data[key]['confirmed'] = True
                 self.current_data[key]['value'] = val
@@ -298,48 +308,41 @@ class CacheEditorFrame(ctk.CTkFrame):
         else:
             db.save_konten_cache_batch(client, new_entries)
             
-        self.selected_keys.clear()
-        self.master_check_var.set(False)
         self.apply_filters_and_render()
         self.show_status(f"{len(new_entries)} Einträge bestätigt!", "green")
 
     def batch_delete(self):
-        if not self.selected_keys:
+        selected = self.get_selected_keys()
+        if not selected:
             self.show_status("Nichts ausgewählt!", "orange")
             return
             
-        try:
-            from tkinter import messagebox
-            if not messagebox.askyesno("Löschen bestätigen", f"Möchtest du wirklich {len(self.selected_keys)} Einträge löschen?"):
-                return
-        except ImportError:
-            pass
+        reply = QMessageBox.question(self, "Löschen bestätigen", f"Möchtest du wirklich {len(selected)} Einträge löschen?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.No:
+            return
             
         client = self.get_client()
         db = get_db()
-        cache_type = self.cache_type_var.get()
+        cache_type = self.cache_type_var.currentText()
         
-        for key in self.selected_keys:
+        for key in selected:
             db.delete_cache_entry(cache_type, client, key)
             if key in self.current_data:
                 del self.current_data[key]
                 
-        count = len(self.selected_keys)
-        self.selected_keys.clear()
-        self.master_check_var.set(False)
         self.apply_filters_and_render()
-        self.show_status(f"{count} Einträge gelöscht!", "green")
+        self.show_status(f"{len(selected)} Einträge gelöscht!", "green")
 
     def save_data(self):
-        # Saves manual edits of the visible entries
         client = self.get_client()
         db = get_db()
-        cache_type = self.cache_type_var.get()
+        cache_type = self.cache_type_var.currentText()
         new_entries = {}
         
-        for key, data in self.entries.items():
-            val_str = data["entry"].get()
-            confirmed = data["confirmed"]
+        for row_data in self.table_model._data:
+            key = row_data[0]
+            val_str = row_data[4]
+            confirmed = row_data[1]
             try:
                 if cache_type == "Sektorenanalyse":
                     parsed = json.loads(val_str)
@@ -347,7 +350,7 @@ class CacheEditorFrame(ctk.CTkFrame):
                     parsed = val_str
                 new_entries[key] = {'value': parsed, 'confirmed': confirmed}
                 self.current_data[key]['value'] = parsed
-            except Exception as e:
+            except:
                 new_entries[key] = {'value': val_str, 'confirmed': confirmed}
                 self.current_data[key]['value'] = val_str
                 
@@ -358,7 +361,7 @@ class CacheEditorFrame(ctk.CTkFrame):
                 db.save_konten_cache_batch(client, new_entries)
                 
         self.show_status("Manuelle Änderungen gespeichert!", "green")
-        self.render_page()
+        self.apply_filters_and_render()
 
     def add_new_entry(self):
         client = self.get_client()
@@ -366,37 +369,34 @@ class CacheEditorFrame(ctk.CTkFrame):
             self.show_status("Bitte zuerst einen Kunden auswählen!", "red")
             return
             
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Neuen Eintrag hinzufügen")
-        dialog.geometry("450x350")
-        dialog.transient(self)
-        dialog.grab_set()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Neuen Eintrag hinzufügen")
+        dialog.resize(450, 300)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         
-        ctk.CTkLabel(dialog, text="Lieferant (z.B. Hans):", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 0))
-        liefer_var = ctk.StringVar()
-        ctk.CTkEntry(dialog, textvariable=liefer_var, width=350).pack(pady=5)
+        layout = QFormLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
         
-        ctk.CTkLabel(dialog, text="Beschreibung (z.B. Kuh 25.12.2006):", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 0))
-        desc_var = ctk.StringVar()
-        ctk.CTkEntry(dialog, textvariable=desc_var, width=350).pack(pady=5)
+        liefer_var = QLineEdit()
+        layout.addRow("Lieferant (z.B. Hans):", liefer_var)
         
-        ctk.CTkLabel(dialog, text="Konto (z.B. 4000):", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 0))
-        val_var = ctk.StringVar()
-        ctk.CTkEntry(dialog, textvariable=val_var, width=350).pack(pady=5)
+        desc_var = QLineEdit()
+        layout.addRow("Beschreibung (z.B. Kuh 25.12.2006):", desc_var)
+        
+        val_var = QLineEdit()
+        layout.addRow("Konto (z.B. 4000):", val_var)
         
         def save():
-            lieferant = liefer_var.get().strip()
-            desc = desc_var.get().strip()
-            val = val_var.get().strip()
+            lieferant = liefer_var.text().strip()
+            desc = desc_var.text().strip()
+            val = val_var.text().strip()
             if not lieferant or not desc or not val:
                 return
                 
             key = f"{lieferant} | {desc}".upper()
-            
-            cache_type = self.cache_type_var.get()
+            cache_type = self.cache_type_var.currentText()
             try:
                 if cache_type == "Sektorenanalyse":
-                    import json
                     parsed_val = json.loads(val)
                 else:
                     parsed_val = val
@@ -413,8 +413,13 @@ class CacheEditorFrame(ctk.CTkFrame):
                 
             self.current_data[key] = new_entry[key]
             
-            dialog.destroy()
+            dialog.accept()
             self.apply_filters_and_render()
             self.show_status("Eintrag hinzugefügt!", "green")
             
-        ctk.CTkButton(dialog, text="Speichern", command=save, fg_color="#2b9e4a", hover_color="#217a39").pack(pady=25)
+        btn_save = QPushButton("Speichern")
+        btn_save.setStyleSheet("background-color: #2b9e4a; color: white;")
+        btn_save.clicked.connect(save)
+        layout.addRow("", btn_save)
+        
+        dialog.exec()

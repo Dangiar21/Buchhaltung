@@ -22,7 +22,7 @@ def ask_shorten_desc_local_fallback():
 
 from sdi_parser import parse_sdi_xml
 
-def parse_xml_to_list(xml_path, targa_dict=None, neue_targas_set=None, fehler_log=None, shorten_description=True):
+def parse_xml_to_list(xml_path, targa_dict=None, neue_targas_set=None, fehler_log=None, shorten_description=True, client_vat_id=""):
     if targa_dict is None: targa_dict = {}
     if neue_targas_set is None: neue_targas_set = set()
     if fehler_log is None: fehler_log = []
@@ -30,13 +30,14 @@ def parse_xml_to_list(xml_path, targa_dict=None, neue_targas_set=None, fehler_lo
     print(f"Lese: {xml_path}")
     
     try:
-        parsed_items = parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_description)
+        parsed_items = parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_description, client_vat_id)
         rechnungspositionen = []
         
         for item in parsed_items:
             waehrung = item.get('Waehrung', 'EUR')
             
             rechnungspositionen.append({
+                'Aktiv/Passiv': item['Aktiv/Passiv'],
                 'Typ': item['Typ'],
                 'Rechnungsnummer': item['Rechnungsnummer'],
                 'Datum': item['Datum'],
@@ -85,6 +86,22 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
             
             shorten_description = ask_shorten_desc()
 
+            client_vat_id = ""
+            client_name = os.path.basename(os.path.dirname(nutzerdaten_dir)) if nutzerdaten_dir else "Unbekannt"
+            if client_name != "Unbekannt":
+                try:
+                    from src.db.database import init_db, Kunde
+                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    db_path = os.path.join(base_dir, "Kunden", "kunden.db")
+                    session = init_db(db_path)
+                    kunde = session.query(Kunde).filter_by(name=client_name).first()
+                    if kunde:
+                        client_vat_id = (kunde.partita_iva or "").strip()
+                        if not client_vat_id:
+                            client_vat_id = (kunde.codice_fiscale or "").strip()
+                except Exception as e:
+                    print(f"Fehler beim Lesen der Datenbank: {e}")
+
             xml_files_to_process = []
             for pfad in paths:
                 if os.path.isfile(pfad) and (pfad.lower().endswith('.xml') or pfad.lower().endswith('.p7m')):
@@ -100,7 +117,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
             
             total_files = len(xml_files_to_process)
             for i, xml_file in enumerate(xml_files_to_process):
-                alle_positionen.extend(parse_xml_to_list(xml_file, targa_dict, neue_targas_set, fehler_log, shorten_description))
+                alle_positionen.extend(parse_xml_to_list(xml_file, targa_dict, neue_targas_set, fehler_log, shorten_description, client_vat_id))
                 percent = int(((i + 1) / total_files) * 100) if total_files > 0 else 100
                 print(f"[PROGRESS:{percent}]")
             

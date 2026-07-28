@@ -1,0 +1,200 @@
+/* Globale Schriftart und Basis */
+* {
+    font-family: 'Segoe UI', Inter, sans-serif;
+    color: #e0e0e0;
+}
+
+/* Hauptfenster (Main Canvas) */
+QMainWindow {
+    background-color: #2a2a2a;
+}
+
+/* ScrollAreas entfernen störende Rahmen */
+QScrollArea {
+    border: none;
+    background-color: transparent;
+}
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+}
+
+/* ---------------------------------
+   SEITENLEISTE (Sidebar)
+--------------------------------- */
+#SidebarFrame {
+    background-color: #121212;
+    border-right: 1px solid #333333;
+}
+
+#SidebarTitle {
+    color: #e0e0e0;
+    font-size: 16pt;
+    font-weight: bold;
+}
+
+#SidebarSectionLabel {
+    color: #a0a0a0;
+    font-size: 10pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    margin-top: 15px;
+    margin-bottom: 5px;
+}
+
+/* Standard Seitenleisten Button */
+#SidebarBtn {
+    background-color: transparent;
+    border: none;
+    text-align: left;
+    padding: 10px 15px;
+    border-radius: 8px;
+    font-size: 11pt;
+    font-weight: 500;
+}
+
+#SidebarBtn:hover {
+    background-color: #2a2a2a;
+    color: #3a7ebf;
+}
+
+/* Der aktuell ausgewählte Button (Active State) */
+#SidebarBtn[active="true"] {
+    background-color: #2c3e50;
+    color: #3a7ebf;
+    font-weight: bold;
+}
+
+#SettingsBtn {
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+    border-radius: 8px;
+    padding: 10px 15px;
+    text-align: left;
+    font-size: 11pt;
+    font-weight: bold;
+}
+#SettingsBtn:hover {
+    background-color: #2a2a2a;
+}
+
+/* Kunden-Liste Container */
+#ClientItem {
+    background-color: transparent;
+    border-radius: 6px;
+}
+#ClientItem:hover {
+    background-color: #2a2a2a;
+}
+#ClientItem[active="true"] {
+    background-color: transparent;
+}
+
+/* Kunden-Liste Name */
+#ClientName {
+    color: #e0e0e0;
+    font-size: 10pt;
+}
+#ClientName[active="true"] {
+    color: #3a7ebf;
+    font-weight: bold;
+}
+
+/* Suchen Input */
+QLineEdit {
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 10pt;
+}
+QLineEdit:focus {
+    border: 1px solid #3a7ebf;
+}
+
+/* Action Buttons (z.B. +, Kunde bearbeiten) */
+#ActionBtn {
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+    border-radius: 6px;
+    padding: 6px 10px;
+}
+#ActionBtn:hover {
+    background-color: #2a2a2a;
+    border: 1px solid #cdd5df;
+}
+
+/* ---------------------------------
+   DASHBOARD KARTEN
+--------------------------------- */
+#DashboardTitle {
+    font-size: 24pt;
+    font-weight: bold;
+    color: #e0e0e0;
+}
+
+/* Der Body der Karte (Weißer Hintergrund) */
+#CardBody {
+    background-color: #1e1e1e;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 8px;
+}
+
+/* Der Header der Karte (Blau) */
+#CardHeaderBlue {
+    background-color: #3a7ebf;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+}
+
+/* Der Header der Karte (Grün) */
+#CardHeaderGreen {
+    background-color: #2e9e63;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+}
+
+#CardTitle {
+    color: #1e1e1e;
+    font-size: 12pt;
+    font-weight: bold;
+}
+
+/* Tool Buttons auf den Werkzeug-Seiten */
+#ToolBtn {
+    background-color: #3a7ebf;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 20px;
+    font-weight: bold;
+    font-size: 11pt;
+}
+#ToolBtn:hover {
+    background-color: #326ba3;
+}
+
+#ToolBtnSecondary {
+    background-color: #2c3e50;
+    color: #3a7ebf;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 20px;
+    font-weight: bold;
+    font-size: 11pt;
+}
+#ToolBtnSecondary:hover {
+    background-color: #d1e5f7;
+}
+
+QTextEdit {
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+    border-radius: 8px;
+    padding: 10px;
+}
+
+#SettingsFrame {
+    border-radius: 10px;
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+}

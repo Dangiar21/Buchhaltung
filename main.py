@@ -11,7 +11,10 @@ sys.path.append(os.path.join(script_dir, 'Programme', 'KI_Training'))
 sys.path.append(os.path.join(script_dir, 'Programme', 'CSV zu Excel'))
 
 from src.ui.main_window import BuchhaltungApp
+from PyQt6.QtWidgets import QApplication
 
 if __name__ == "__main__":
+    qapp = QApplication(sys.argv)
     app = BuchhaltungApp()
-    app.mainloop()
+    app.show()
+    sys.exit(qapp.exec())

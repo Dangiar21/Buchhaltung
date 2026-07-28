@@ -171,16 +171,19 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
             fehler_log = []
             
             client_vat_id = ""
-            if nutzerdaten_dir:
-                info_path = os.path.join(nutzerdaten_dir, "info.json")
-                if os.path.exists(info_path):
-                    try:
-                        import json
-                        with open(info_path, "r", encoding="utf-8") as f:
-                            client_data = json.load(f)
-                            client_vat_id = client_data.get("Partita_IVA", "").strip()
-                    except Exception as e:
-                        print(f"Fehler beim Lesen von info.json: {e}")
+            client_name = os.path.basename(os.path.dirname(nutzerdaten_dir)) if nutzerdaten_dir else "Unbekannt"
+            if client_name != "Unbekannt":
+                try:
+                    from src.db.database import init_db, Kunde
+                    db_path = os.path.join(base_dir, "Kunden", "kunden.db")
+                    session = init_db(db_path)
+                    kunde = session.query(Kunde).filter_by(name=client_name).first()
+                    if kunde:
+                        client_vat_id = (kunde.partita_iva or "").strip()
+                        if not client_vat_id:
+                            client_vat_id = (kunde.codice_fiscale or "").strip()
+                except Exception as e:
+                    print(f"Fehler beim Lesen der Datenbank: {e}")
             
             # Lade den DB Cache für den Kunden, um UI-Bestätigungen zu berücksichtigen
             kunden_id_ordner = os.path.basename(os.path.dirname(nutzerdaten_dir)) if nutzerdaten_dir else "Unbekannt"
