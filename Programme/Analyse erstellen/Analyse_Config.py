@@ -42,18 +42,19 @@ def load_setup(nutzerdaten_dir):
         return []
         
     try:
-        df = pd.read_excel(setup_path)
+        import polars as pl
+        df = pl.read_excel(setup_path)
         kategorien = []
-        for _, row in df.iterrows():
-            kategorie = str(row.iloc[0]).strip()
-            regel = str(row.iloc[1]).strip()
-            beispiele = str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else ""
+        for row in df.iter_rows():
+            kategorie = str(row[0]).strip() if row[0] is not None else ""
+            regel = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+            beispiele = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ""
             
-            if kategorie and kategorie != 'nan':
+            if kategorie and kategorie != 'nan' and kategorie != 'None':
                 kategorien.append({
                     "name": kategorie,
-                    "regel": regel if regel != 'nan' else "",
-                    "beispiele": beispiele if beispiele != 'nan' else ""
+                    "regel": regel if regel != 'nan' and regel != 'None' else "",
+                    "beispiele": beispiele if beispiele != 'nan' and beispiele != 'None' else ""
                 })
         return kategorien
     except Exception as e:
@@ -80,25 +81,36 @@ def build_system_instruction(kategorien, is_stage2=False):
         kategorien_dict[kat['name']] = "Dein_Ergebnis_Hier"
         
     prompt += "Du erhältst eine Liste von Artikeln im Format: [ID] Lieferant | Beschreibung\n"
-    prompt += "Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt. Die Schlüssel auf der obersten Ebene sind die IDs (als String).\n"
+    prompt += "Antworte AUSSCHLIESSLICH mit einem validen JSON-Objekt, das eine Liste unter dem Schlüssel 'ergebnisse' enthält.\n"
     
     import json
     if not is_stage2:
-        prompt += "Der Wert für jede ID MUSS ein JSON-Objekt mit exakt diesen 3 Schlüsseln sein: 'gedankengang', 'konfidenz', 'konto' (bzw. kategorien_werte).\n"
+        prompt += "Jedes Objekt in der Liste MUSS exakt diese 4 Schlüssel haben: 'id' (als String), 'gedankengang', 'konfidenz', 'konto'.\n"
         prompt += "'gedankengang' ist ein Satz, 'konfidenz' ist eine Zahl 1-10.\n"
         prompt += "'konto' (wir nennen es intern kategorien_werte) ist ein JSON-Objekt mit den Kategorien als Schlüssel.\n"
         
         beispiel_antwort = {
-            "0": {
-                "gedankengang": "Erklaerung hier",
-                "konfidenz": 9,
-                "konto": kategorien_dict
-            }
+            "ergebnisse": [
+                {
+                    "id": "0",
+                    "gedankengang": "Erklaerung hier",
+                    "konfidenz": 9,
+                    "konto": kategorien_dict
+                }
+            ]
         }
     else:
-        prompt += "Der Wert für jede ID ist direkt ein Objekt mit den Kategorien als Schlüssel.\n"
+        prompt += "Jedes Objekt in der Liste MUSS diese Schlüssel haben: 'id' (als String) und 'konto'.\n"
+        prompt += "Der Schlüssel 'konto' ist ein Objekt mit den Kategorien als Schlüssel.\n"
         prompt += "Du MUSST dich zwingend für jede Kategorie entscheiden. Lass den Wert NIEMALS leer, auch wenn du unsicher bist.\n"
-        beispiel_antwort = {"0": kategorien_dict}
+        beispiel_antwort = {
+            "ergebnisse": [
+                {
+                    "id": "0",
+                    "konto": kategorien_dict
+                }
+            ]
+        }
         
     prompt += f"\nBeispiel-Antwort:\n{json.dumps(beispiel_antwort, indent=2)}"
     

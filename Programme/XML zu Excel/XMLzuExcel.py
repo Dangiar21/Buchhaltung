@@ -16,9 +16,6 @@ except Exception as e:
     input("\nDrücke Enter zum Beenden...")
     sys.exit(1)
 
-def ask_shorten_desc_local_fallback():
-    # Wird nun über utils.py importiert.
-    pass
 
 from sdi_parser import parse_sdi_xml
 

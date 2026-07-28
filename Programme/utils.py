@@ -1,7 +1,6 @@
 import os
 
-import tkinter as tk
-from tkinter import messagebox
+
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -82,19 +81,16 @@ def append_new_targas_to_excel(targa_file, neue_targas_set):
 
 def ask_shorten_desc():
     try:
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        result = messagebox.askyesno(
-            "Beschreibung kürzen?", 
-            "Sollen die Rechnungs-Beschreibungen am Komma gekürzt werden?\n\n"
-            "Ja = Nur den vorderen Teil verwenden (Zusatzinfos abschneiden)\n"
-            "Nein = Die komplette Beschreibung übernehmen"
-        )
-        root.destroy()
-        return result
+        import json
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(base_dir, "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                return config.get("shorten_desc", True)
     except Exception as e:
-        return True
+        pass
+    return True
 
 def get_text(node, xpath, default=""):
     if node is None:

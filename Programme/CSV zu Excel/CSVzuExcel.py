@@ -1,86 +1,65 @@
+import polars as pl
 import os
-import pandas as pd
 import re
 import csv
 import traceback
 
 def clean_number(val):
-    if pd.isna(val):
+    if val is None:
         return val
         
     val_str = str(val).strip()
     
     # Check if it looks like a messy number
-    # It might have € or $ signs
     val_str_clean = re.sub(r'[€$\s]', '', val_str)
     
-    # It must contain at least one digit
     if not any(c.isdigit() for c in val_str_clean):
         return val
         
-    # If it's just digits, maybe with a minus
     if re.fullmatch(r'-?\d+', val_str_clean):
         try:
             return int(val_str_clean)
         except:
             return val_str
             
-    # Now for the messy commas and dots
-    # Pattern: 1.000,50 or 1,000.50 or 1.000 or 1,000 or 12.50
-    # Let's count dots and commas
     num_dots = val_str_clean.count('.')
     num_commas = val_str_clean.count(',')
     
-    # If both exist
     if num_dots > 0 and num_commas > 0:
         last_dot = val_str_clean.rfind('.')
         last_comma = val_str_clean.rfind(',')
         
         if last_dot > last_comma:
-            # e.g., 1,000.50 (English style)
-            # Remove all commas, leave the dot
             val_str_clean = val_str_clean.replace(',', '')
         else:
-            # e.g., 1.000,50 (German style)
-            # Remove all dots, replace comma with dot
             val_str_clean = val_str_clean.replace('.', '').replace(',', '.')
     
     elif num_dots > 0 and num_commas == 0:
-        # Only dots
         if num_dots == 1:
-            # Could be 1.000 or 1.50
             parts = val_str_clean.split('.')
             if len(parts[1]) == 3:
-                # E.g. 1.000 -> assume it's a thousand separator
                 val_str_clean = val_str_clean.replace('.', '')
             else:
-                # E.g. 1.50 or 1.1 -> assume it's a decimal
-                pass # dot is already fine for float
+                pass
         else:
-            # Multiple dots -> e.g. 1.000.000 -> all thousand separators
             val_str_clean = val_str_clean.replace('.', '')
             
     elif num_commas > 0 and num_dots == 0:
-        # Only commas
         if num_commas == 1:
             parts = val_str_clean.split(',')
             if len(parts[1]) == 3:
-                # E.g. 1,000 -> assume thousand separator
                 val_str_clean = val_str_clean.replace(',', '')
             else:
-                # E.g. 1,50 -> assume decimal
                 val_str_clean = val_str_clean.replace(',', '.')
         else:
-            # Multiple commas -> all thousand separators
             val_str_clean = val_str_clean.replace(',', '')
 
     try:
-        # Try to convert to float
         if '.' in val_str_clean:
             return float(val_str_clean)
         return int(val_str_clean)
     except:
-        return val  # Return original if parsing fails
+        return val
 
 def process_csv(csv_path):
     try:
@@ -95,14 +74,25 @@ def process_csv(csv_path):
                 if sample.count(';') > sample.count(','):
                     delimiter = ';'
                     
-        df = pd.read_csv(csv_path, sep=delimiter, dtype=str, encoding='utf-8', encoding_errors='replace')
+        # Read with Polars
+        df = pl.read_csv(csv_path, separator=delimiter, infer_schema_length=0, encoding='utf8-lossy')
         
         # Apply cleaning to all columns
+        # Note: clean_number can return int, float or string. We use map_elements with return_dtype=pl.Object or let Polars infer.
+        # To make it write to excel properly, we can convert back to standard python dicts or try to cast.
+        # Easiest way to handle mixed types in polars for excel export:
+        
+        exprs = []
         for col in df.columns:
-            df[col] = df[col].apply(clean_number)
-            
+            exprs.append(
+                pl.col(col).map_elements(lambda x: clean_number(x), return_dtype=pl.String, skip_nulls=False).alias(col)
+            )
+        
+        df = df.with_columns(exprs)
+        
         output_path = os.path.splitext(csv_path)[0] + "_cleaned.xlsx"
-        df.to_excel(output_path, index=False)
+        # Write to excel using polars
+        df.write_excel(output_path)
         
         # Open the generated file automatically on Windows
         if os.name == 'nt':

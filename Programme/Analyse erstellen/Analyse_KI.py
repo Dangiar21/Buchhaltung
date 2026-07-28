@@ -57,12 +57,31 @@ async def call_gemini_api_with_retry(model_name, system_instruction, prompt_text
         current_model = GEMINI_MODELS[current_waterfall_idx] if is_waterfall else model_name
         try:
             def _call():
+                from pydantic import BaseModel, Field
+                
+                class AnalyseErgebnis1(BaseModel):
+                    id: str
+                    gedankengang: str
+                    konfidenz: int
+                    konto: dict[str, str]
+                class AnalyseResponse1(BaseModel):
+                    ergebnisse: list[AnalyseErgebnis1]
+                    
+                class AnalyseErgebnis2(BaseModel):
+                    id: str
+                    konto: dict[str, str]
+                class AnalyseResponse2(BaseModel):
+                    ergebnisse: list[AnalyseErgebnis2]
+                    
+                schema = AnalyseResponse2 if is_waterfall else AnalyseResponse1
+                
                 return client.models.generate_content(
                     model=current_model,
                     contents=prompt_text,
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
                         response_mime_type="application/json",
+                        response_schema=schema,
                         temperature=0.1,
                     ),
                 )
@@ -140,20 +159,19 @@ async def process_batch_async(chunk, system_instruction_stage1, system_instructi
             unsichere_faelle = []
             geloest = 0
             
-            for local_idx_str, data in response_json.items():
+            ergebnisse_list = response_json.get("ergebnisse", [])
+            for data in ergebnisse_list:
+                local_idx_str = data.get("id", "")
                 if local_idx_str.isdigit():
                     local_idx = int(local_idx_str)
                     if 0 <= local_idx < len(chunk):
                         item = chunk[local_idx]
-                        if isinstance(data, dict):
-                            konfidenz = data.get("konfidenz", 0)
-                            if konfidenz >= CONFIDENCE_THRESHOLD:
-                                kategorien_dict = data.get("konto", {}) # Konto ist in Analyse_KI ein Dict
-                                results[item['id']] = kategorien_dict
-                                new_entries[item['cache_key']] = kategorien_dict
-                                geloest += 1
-                            else:
-                                unsichere_faelle.append(local_idx)
+                        konfidenz = data.get("konfidenz", 0)
+                        if konfidenz >= CONFIDENCE_THRESHOLD:
+                            kategorien_dict = data.get("konto", {})
+                            results[item['id']] = kategorien_dict
+                            new_entries[item['cache_key']] = kategorien_dict
+                            geloest += 1
                         else:
                             unsichere_faelle.append(local_idx)
                             
@@ -179,11 +197,14 @@ async def process_batch_async(chunk, system_instruction_stage1, system_instructi
                 )
                 
                 if response_json_2:
-                    for local_idx_str, kategorien_dict in response_json_2.items():
+                    ergebnisse_list_2 = response_json_2.get("ergebnisse", [])
+                    for data in ergebnisse_list_2:
+                        local_idx_str = data.get("id", "")
                         if local_idx_str.isdigit():
                             local_idx = int(local_idx_str)
                             if 0 <= local_idx < len(chunk):
                                 item = chunk[local_idx]
+                                kategorien_dict = data.get("konto", {})
                                 results[item['id']] = kategorien_dict
                                 new_entries[item['cache_key']] = kategorien_dict
                                 

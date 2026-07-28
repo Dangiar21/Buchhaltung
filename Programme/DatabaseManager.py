@@ -226,6 +226,17 @@ class DatabaseManager:
             conn.commit()
 
     # --- Sync Status ---
+    def get_unconfirmed_status_for_all(self) -> set:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT DISTINCT kunden_id FROM cache_analyse WHERE confirmed = 0')
+            unconfirmed_clients = set(row[0] for row in cursor.fetchall())
+            
+            cursor.execute('SELECT DISTINCT kunden_id FROM cache_konten WHERE confirmed = 0')
+            unconfirmed_clients.update(row[0] for row in cursor.fetchall())
+            
+        return unconfirmed_clients
+
     def get_sync_status(self, kunden_id: str, regel_typ: str) -> float:
         with self.get_connection() as conn:
             cursor = conn.cursor()

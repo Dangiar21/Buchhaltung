@@ -32,13 +32,11 @@ class Signaller(QObject):
 class BuchhaltungApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        
         self.config_manager = ConfigManager()
         self.lang = self.config_manager.get("language", "DE")
         
         self.setWindowTitle("Buchhaltung Suite")
         self.resize(1100, 700)
-        
         # Apply custom style.qss (or style_dark.qss)
         appearance = self.config_manager.get("appearance_mode", "Light")
         style_file = "style_dark.qss" if appearance == "Dark" else "style.qss"
@@ -359,6 +357,18 @@ class BuchhaltungApp(QMainWindow):
             self.client_list_layout.addStretch()
             return
             
+        unconfirmed_set = set()
+        try:
+            import sys
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            prog_dir = os.path.join(base_dir, "Programme")
+            if prog_dir not in sys.path:
+                sys.path.append(prog_dir)
+            from DatabaseManager import get_db
+            unconfirmed_set = get_db().get_unconfirmed_status_for_all()
+        except Exception as e:
+            logger.error(f"Fehler beim Laden des Unbestätigt-Status: {e}")
+            
         for c in clients_to_show:
             item_widget = QWidget()
             item_widget.setObjectName("ClientItem")
@@ -381,9 +391,10 @@ class BuchhaltungApp(QMainWindow):
             item_layout.addWidget(lbl_name)
             item_layout.addStretch()
             
-            # Green Dot
+            # Status Dot
             dot = QLabel()
-            dot.setPixmap(qta.icon('fa5s.circle', color='#2e9e63').pixmap(8, 8))
+            dot_color = '#cc0000' if c in unconfirmed_set else '#2e9e63'
+            dot.setPixmap(qta.icon('fa5s.circle', color=dot_color).pixmap(8, 8))
             item_layout.addWidget(dot)
             
             # Make widget clickable
@@ -460,13 +471,15 @@ class BuchhaltungApp(QMainWindow):
         if tool_id is None:
             tool_id = self.active_tool
             
+        from PyQt6.QtCore import QTimer
+            
         def on_start():
             if tool_id in self.tool_frames:
-                self.tool_frames[tool_id]['btn_c'].show()
+                QTimer.singleShot(0, lambda: self.tool_frames[tool_id]['btn_c'].show())
 
         def on_finish():
             if tool_id in self.tool_frames:
-                self.tool_frames[tool_id]['btn_c'].hide()
+                QTimer.singleShot(0, lambda: self.tool_frames[tool_id]['btn_c'].hide())
 
         self.controller.process_paths(
             paths=paths,
