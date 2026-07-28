@@ -6,9 +6,8 @@ from typing import Dict, List, Any
 MAX_CONCURRENT_REQUESTS = 2
 CONFIDENCE_THRESHOLD = 8
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash"
+    "gemini-3.6-flash",
+    "gemini-3.5-flash"
 ]
 current_waterfall_idx = 0
 
@@ -185,7 +184,7 @@ async def process_batch_async(chunk, system_instruction_stage1, system_instructi
             
             # STUFE 1: Lite Modell
             response_json = await call_gemini_api_with_retry(
-                "gemini-1.5-flash", 
+                "gemini-3.5-flash-lite", 
                 system_instruction_stage1, 
                 prompt_text, 
                 batch_num, 
