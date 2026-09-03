@@ -163,17 +163,17 @@ async def call_gemini_api_with_retry(model_name, system_instruction, prompt_text
 
 
 
-async def process_batch_async(chunk, system_instruction_stage1, system_instruction_stage2, batch_num, total_batches, sem, results):
+async def process_batch_stage1(chunk, system_instruction_stage1, batch_num, total_batches, sem, results) -> List[Dict[str, Any]]:
     global cancel_requested
     
     if cancel_requested:
-        return False
+        return []
 
     async with sem:
         if cancel_requested:
-            return False
+            return []
             
-        print(f"-> Starte Batch {batch_num}/{total_batches} ({len(chunk)} Artikel) [Stufe 1]...")
+        print(f"-> Starte Stufe 1 Batch {batch_num}/{total_batches} ({len(chunk)} Artikel)...")
         prompt_text = "Bitte klassifiziere folgende Artikel:\n"
         for local_idx, item in enumerate(chunk):
             prompt_text += f"ID: {local_idx} | "
@@ -182,6 +182,7 @@ async def process_batch_async(chunk, system_instruction_stage1, system_instructi
                     prompt_text += f"{k}: {v} | "
             prompt_text += "\n"
             
+        unsichere_faelle = []
         try:
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             
@@ -195,65 +196,88 @@ async def process_batch_async(chunk, system_instruction_stage1, system_instructi
                 is_waterfall=False
             )
             
-            if not response_json:
-                return False
-                
-            unsichere_faelle = []
-            geloest = 0
+            geloeste_local_indices = set()
+            if response_json and isinstance(response_json, dict):
+                for local_idx_str, data in response_json.items():
+                    if local_idx_str.isdigit():
+                        local_idx = int(local_idx_str)
+                        if 0 <= local_idx < len(chunk):
+                            if isinstance(data, dict):
+                                try:
+                                    konfidenz = int(data.get("konfidenz", 0))
+                                except (ValueError, TypeError):
+                                    konfidenz = 0
+                                if konfidenz >= CONFIDENCE_THRESHOLD:
+                                    global_id = chunk[local_idx]['id']
+                                    results[global_id] = str(data.get("konto", "")).strip()
+                                    geloeste_local_indices.add(local_idx)
             
-            for local_idx_str, data in response_json.items():
-                if local_idx_str.isdigit():
-                    local_idx = int(local_idx_str)
-                    if 0 <= local_idx < len(chunk):
-                        global_id = chunk[local_idx]['id']
-                        if isinstance(data, dict):
-                            konfidenz = data.get("konfidenz", 0)
-                            if konfidenz >= CONFIDENCE_THRESHOLD:
-                                results[global_id] = data.get("konto", "")
-                                geloest += 1
-                            else:
-                                unsichere_faelle.append(local_idx)
-                        else:
-                            unsichere_faelle.append(local_idx)
-                            
-            print(f"   Stufe 1 Batch {batch_num}: {geloest}/{len(chunk)} geloest. {len(unsichere_faelle)} gehen an Stufe 2.")
-            
-            # STUFE 2: Wasserfall für schwere Fälle
-            if unsichere_faelle and not cancel_requested:
-                print(f"   Batch {batch_num}: Starte Stufe 2 Wasserfall fuer {len(unsichere_faelle)} Artikel...")
-                prompt_text_2 = "Bitte analysiere folgende schwierige Faelle:\n"
-                for local_idx in unsichere_faelle:
-                    item = chunk[local_idx]
-                    prompt_text_2 += f"ID: {local_idx} | "
-                    for k, v in item.items():
-                        if k not in ['id', 'cache_key'] and str(v).strip() != "":
-                            prompt_text_2 += f"{k}: {v} | "
-                    prompt_text_2 += "\n"
+            for local_idx, item in enumerate(chunk):
+                if local_idx not in geloeste_local_indices:
+                    unsichere_faelle.append(item)
                     
-                response_json_2 = await call_gemini_api_with_retry(
-                    None,  # Wird durch Wasserfall ueberschrieben
-                    system_instruction_stage2,
-                    prompt_text_2,
-                    batch_num,
-                    base_dir,
-                    is_waterfall=True
-                )
-                
-                if response_json_2:
-                    for local_idx_str, konto in response_json_2.items():
-                        if local_idx_str.isdigit():
-                            local_idx = int(local_idx_str)
-                            if 0 <= local_idx < len(chunk):
-                                global_id = chunk[local_idx]['id']
-                                # In Stufe 2 ist das Resultat direkt das Konto, kein Dict
-                                results[global_id] = konto
-                                
-            print(f"<- Batch {batch_num} vollstaendig abgeschlossen.")
-            return True
+            print(f"<- Stufe 1 Batch {batch_num}/{total_batches} fertig: {len(geloeste_local_indices)}/{len(chunk)} geloest ({len(unsichere_faelle)} fuer Stufe 2 vorgemerkt).")
+            return unsichere_faelle
             
         except Exception as e:
-            print(f"Fehler in Batch {batch_num}: {e}")
+            print(f"Fehler in Stufe 1 Batch {batch_num}: {e}")
+            return chunk
+
+async def process_batch_stage2(chunk, system_instruction_stage2, batch_num, total_batches, sem, results) -> bool:
+    global cancel_requested
+    
+    if cancel_requested:
+        return False
+
+    async with sem:
+        if cancel_requested:
             return False
+            
+        print(f"-> Starte Stufe 2 Batch {batch_num}/{total_batches} ({len(chunk)} Artikel) [Flash-Wasserfall]...")
+        prompt_text_2 = "Bitte analysiere folgende schwierige Faelle:\n"
+        for local_idx, item in enumerate(chunk):
+            prompt_text_2 += f"ID: {local_idx} | "
+            for k, v in item.items():
+                if k not in ['id', 'cache_key'] and str(v).strip() != "":
+                    prompt_text_2 += f"{k}: {v} | "
+            prompt_text_2 += "\n"
+            
+        try:
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            response_json_2 = await call_gemini_api_with_retry(
+                None,  # Wird durch Wasserfall ueberschrieben
+                system_instruction_stage2,
+                prompt_text_2,
+                f"S2-{batch_num}",
+                base_dir,
+                is_waterfall=True
+            )
+            
+            if response_json_2 and isinstance(response_json_2, dict):
+                geloest_s2 = 0
+                for local_idx_str, konto in response_json_2.items():
+                    if local_idx_str.isdigit():
+                        local_idx = int(local_idx_str)
+                        if 0 <= local_idx < len(chunk):
+                            global_id = chunk[local_idx]['id']
+                            if isinstance(konto, str):
+                                results[global_id] = konto.strip()
+                                geloest_s2 += 1
+                            elif isinstance(konto, dict):
+                                results[global_id] = str(konto.get("konto", "")).strip()
+                                geloest_s2 += 1
+                print(f"<- Stufe 2 Batch {batch_num}/{total_batches} abgeschlossen ({geloest_s2}/{len(chunk)} zugeordnet).")
+                return True
+            else:
+                print(f"   Stufe 2 Batch {batch_num}/{total_batches}: Keine gueltige Antwort.")
+                return False
+                
+        except Exception as e:
+            print(f"Fehler in Stufe 2 Batch {batch_num}: {e}")
+            return False
+
+# Rueckwaertskompatibilitaet falls benoetigt
+process_batch_async = process_batch_stage1
 
 async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], api_key: str, nutzerdaten_dir: str, is_er: bool = True) -> Dict[str, str]:
     if not items_to_classify:
@@ -326,32 +350,62 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
     system_instruction_stage1 = build_system_instruction(nutzerdaten_dir, is_stage2=False, is_er=is_er)
     system_instruction_stage2 = build_system_instruction(nutzerdaten_dir, is_stage2=True, is_er=is_er)
     
-    chunk_size = 25
+    chunk_size_stage1 = 25
+    chunk_size_stage2 = 15
     total_items = len(items_for_api)
     results = {}
     
     print(f"\nSende {total_items} neue Positionen asynchron an die KI zur Kontierung...")
     
-    chunks = [items_for_api[i:i + chunk_size] for i in range(0, total_items, chunk_size)]
+    chunks_stage1 = [items_for_api[i:i + chunk_size_stage1] for i in range(0, total_items, chunk_size_stage1)]
     sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     
-    tasks = []
-    completed_batches = 0
-    total_batches = len(chunks)
+    # --- STUFE 1: Vorfilterung ueber Lite-Modell ---
+    total_batches_s1 = len(chunks_stage1)
+    completed_batches_s1 = 0
     
-    async def process_and_track(chunk, i):
-        nonlocal completed_batches
-        result = await process_batch_async(chunk, system_instruction_stage1, system_instruction_stage2, i + 1, len(chunks), sem, results)
-        completed_batches += 1
-        percent = 20 + int((completed_batches / total_batches) * 70)
+    async def process_and_track_s1(chunk, i):
+        nonlocal completed_batches_s1
+        batch_unsichere = await process_batch_stage1(chunk, system_instruction_stage1, i + 1, total_batches_s1, sem, results)
+        completed_batches_s1 += 1
+        percent = 20 + int((completed_batches_s1 / total_batches_s1) * 40)
         print(f"[PROGRESS:{percent}]")
-        return result
+        return batch_unsichere
 
-    for i, chunk in enumerate(chunks):
-        task = process_and_track(chunk, i)
-        tasks.append(task)
+    tasks_s1 = [process_and_track_s1(chunk, i) for i, chunk in enumerate(chunks_stage1)]
+    s1_outputs = await asyncio.gather(*tasks_s1, return_exceptions=True)
+    
+    if cancel_requested:
+        return results
         
-    await asyncio.gather(*tasks, return_exceptions=True)
+    all_unsichere = []
+    for out in s1_outputs:
+        if isinstance(out, list):
+            all_unsichere.extend(out)
+            
+    geloest_s1 = len(results)
+    print(f"\nStufe 1 beendet: {geloest_s1}/{total_items} Positionen direkt geloest (Konfidenz >= {CONFIDENCE_THRESHOLD}/10).")
+    
+    # --- STUFE 2: Unsichere Faelle sammeln und in 15er-Bloecken an Flash-Wasserfall senden ---
+    if all_unsichere and not cancel_requested:
+        chunks_stage2 = [all_unsichere[i:i + chunk_size_stage2] for i in range(0, len(all_unsichere), chunk_size_stage2)]
+        total_batches_s2 = len(chunks_stage2)
+        completed_batches_s2 = 0
+        
+        print(f"Sammle {len(all_unsichere)} Faelle fuer Stufe 2 in {total_batches_s2} Bloecke (max. {chunk_size_stage2} Artikel/Block)...")
+        
+        async def process_and_track_s2(chunk, i):
+            nonlocal completed_batches_s2
+            ok = await process_batch_stage2(chunk, system_instruction_stage2, i + 1, total_batches_s2, sem, results)
+            completed_batches_s2 += 1
+            percent = 60 + int((completed_batches_s2 / total_batches_s2) * 30)
+            print(f"[PROGRESS:{percent}]")
+            return ok
+
+        tasks_s2 = [process_and_track_s2(chunk, i) for i, chunk in enumerate(chunks_stage2)]
+        await asyncio.gather(*tasks_s2, return_exceptions=True)
+    else:
+        print("[PROGRESS:90]")
     
     # Track new entries for DB
     for item in items_for_api:
