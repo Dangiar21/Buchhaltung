@@ -1,6 +1,6 @@
 @echo off
 echo Starte Buchhaltungsprogramm...
-python main.py
+py main.py
 echo.
 echo Das Programm wurde beendet oder ist abgestuerzt.
 pause

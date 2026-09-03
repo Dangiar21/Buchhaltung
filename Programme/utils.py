@@ -87,10 +87,10 @@ def ask_shorten_desc():
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
-                return config.get("shorten_desc", True)
+                return config.get("shorten_desc", False)
     except Exception as e:
         pass
-    return True
+    return False
 
 def get_text(node, xpath, default=""):
     if node is None:

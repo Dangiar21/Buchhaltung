@@ -7,7 +7,7 @@ Ein intelligentes, automatisiertes Buchhaltungsprogramm zur Verwaltung, Auswertu
 
 - **XML zu Excel:** Schnellkonvertierung von Rechnungsordnern in übersichtliche Excel-Tabellen.
 - **Automatisierte Kontierung:** Ein hybrides Regelsystem weist Rechnungen automatisch Konten zu (basiert auf kunden- und globalen Regeln).
-- **KI-Integration & Deduplizierung:** Unbekannte Rechnungen werden durch hochpräzise Gemini-Modelle (Gemini 3.5 Flash Lite & Gemini 3.6 Flash via Google GenAI) im 2-Stufen-Wasserfall analysiert und dem passenden Konto zugewiesen. Ergebnisse werden lokal in einer SQLite Datenbank gecached, um API-Kosten zu sparen und schnelle Durchläufe zu ermöglichen.
+- **KI-Integration & Deduplizierung:** Unbekannte Rechnungen werden durch hochpräzise Gemini-Modelle (Gemini 3.5 Flash Lite & Gemini 3.8/3.7/3.6/3.5 Flash via Google GenAI) im 2-Stufen-Wasserfall analysiert und dem passenden Konto zugewiesen. Ergebnisse werden lokal in einer SQLite Datenbank gecached, um API-Kosten zu sparen und schnelle Durchläufe zu ermöglichen.
 - **Sicher & Robust:** Schutz vor XXE-Angriffen durch `defusedxml`, ASN.1 Krypto-Entschlüsselung für P7M-Dateien (`asn1crypto`) und automatische Retry-Fallbacks bei Limit-Auslastungen (429 Rate Limits).
 
 ## ⚙️ Installation & Setup auf einem neuen PC

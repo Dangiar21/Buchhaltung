@@ -19,7 +19,7 @@ except Exception as e:
 
 from sdi_parser import parse_sdi_xml
 
-def parse_xml_to_list(xml_path, targa_dict=None, neue_targas_set=None, fehler_log=None, shorten_description=True, client_vat_id=""):
+def parse_xml_to_list(xml_path, targa_dict=None, neue_targas_set=None, fehler_log=None, shorten_description=False, client_vat_id=""):
     if targa_dict is None: targa_dict = {}
     if neue_targas_set is None: neue_targas_set = set()
     if fehler_log is None: fehler_log = []

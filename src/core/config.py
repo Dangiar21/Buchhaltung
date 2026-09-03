@@ -8,7 +8,8 @@ class ConfigManager:
             "language": "DE",
             "appearance_mode": "Light",
             "last_client": None,
-            "recent_clients": []
+            "recent_clients": [],
+            "shorten_desc": False
         }
         self.config = self.load()
 

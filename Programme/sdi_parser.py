@@ -10,7 +10,7 @@ except ImportError:
 # utils.py is in the same directory
 from utils import get_text, safe_float, read_xml_or_p7m
 
-def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_description=True, client_vat_id=""):
+def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_description=False, client_vat_id=""):
     """
     Parst eine SDI XML- oder P7M-Datei und gibt eine Liste von Positionen (Dicts) zurück.
     Wendet robuste Vorzeichenlogik (Gutschriften, Rabatte, Bollo) und Targa-Extraktion an.

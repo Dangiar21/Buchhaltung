@@ -58,7 +58,7 @@ def clean_description_for_dedup(desc, global_terms=None):
         
     return desc
 
-def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=True, client_vat_id="", db_konten_cache=None, global_terms=None):
+def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=False, client_vat_id="", db_konten_cache=None, global_terms=None):
     if db_konten_cache is None: db_konten_cache = {}
     print(f"Lese: {xml_path}")
     

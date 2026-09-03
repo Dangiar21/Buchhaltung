@@ -6,6 +6,8 @@ from typing import Dict, List, Any
 MAX_CONCURRENT_REQUESTS = 2
 CONFIDENCE_THRESHOLD = 8
 GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash"
 ]
