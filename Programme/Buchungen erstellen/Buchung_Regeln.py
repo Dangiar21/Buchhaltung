@@ -113,13 +113,17 @@ def ensure_rule_file(file_path):
 
     if modified:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        wb.save(file_path)
+        try:
+            wb.save(file_path)
+        except (PermissionError, OSError) as e:
+            print(f"Warnung: Konnte {file_path} nicht aktualisieren (evtl. in Excel geöffnet): {e}")
 
 def load_rules(global_path, client_path):
     """
     Lädt die Regeln über den DatabaseManager (CQRS). Excel dient als Frontend.
     """
     rules = {
+        "client_lieferant": {},
         "client_stichwort": {},
         "global_stichwort": {},
         "global_lieferant": {}
@@ -177,18 +181,46 @@ def load_rules(global_path, client_path):
         client_mtime = os.path.getmtime(client_path)
         last_sync = db.get_sync_status(client_id, "client_rules")
         
-        if client_mtime > last_sync:
+        # Prüfe ob Resync nötig (Zeitstempel geändert oder Lieferanten-Regeln noch nie synchronisiert)
+        needs_sync = client_mtime > last_sync
+        if not needs_sync:
+            try:
+                df_check = db.get_rules(client_id, "client_rules")
+                if df_check.empty or "client_lieferant" not in df_check["regel_typ"].values:
+                    needs_sync = True
+            except Exception:
+                needs_sync = True
+        
+        if needs_sync:
             print(f"Synchronisiere kunden-spezifische Regeln für {client_id} aus Excel in SQLite...")
             try:
-                df_c_stich = pd.read_excel(client_path, sheet_name="Stichwort-Regeln")
                 rules_list = []
-                for _, row in df_c_stich.iterrows():
-                    stich = str(row.iloc[0]).strip().lower()
-                    konto_raw = str(row.iloc[1]).strip()
-                    konto = konto_raw.split(' - ')[0].strip() if konto_raw != 'nan' else ''
-                    if konto.endswith('.0'): konto = konto[:-2]
-                    if stich and stich != 'nan' and konto:
-                        rules_list.append({"prioritaet": 1, "suchbegriff": stich, "konto": konto, "regel_typ": "client_stichwort"})
+                
+                # 2.1 Kunden Lieferanten-Regeln
+                try:
+                    df_c_lief = pd.read_excel(client_path, sheet_name="Lieferanten-Regeln")
+                    for _, row in df_c_lief.iterrows():
+                        lief = str(row.iloc[0]).strip().lower()
+                        konto_raw = str(row.iloc[1]).strip()
+                        konto = konto_raw.split(' - ')[0].strip() if konto_raw != 'nan' else ''
+                        if konto.endswith('.0'): konto = konto[:-2]
+                        if lief and lief != 'nan' and konto:
+                            rules_list.append({"prioritaet": 0, "lieferant": lief, "konto": konto, "regel_typ": "client_lieferant"})
+                except Exception as e:
+                    pass
+
+                # 2.2 Kunden Stichwort-Regeln
+                try:
+                    df_c_stich = pd.read_excel(client_path, sheet_name="Stichwort-Regeln")
+                    for _, row in df_c_stich.iterrows():
+                        stich = str(row.iloc[0]).strip().lower()
+                        konto_raw = str(row.iloc[1]).strip()
+                        konto = konto_raw.split(' - ')[0].strip() if konto_raw != 'nan' else ''
+                        if konto.endswith('.0'): konto = konto[:-2]
+                        if stich and stich != 'nan' and konto:
+                            rules_list.append({"prioritaet": 1, "suchbegriff": stich, "konto": konto, "regel_typ": "client_stichwort"})
+                except Exception as e:
+                    pass
                         
                 df_sync = pd.DataFrame(rules_list)
                 db.sync_rules(client_id, "client_rules", df_sync)
@@ -213,7 +245,10 @@ def load_rules(global_path, client_path):
             df_client = db.get_rules(client_id, "client_rules")
             if not df_client.empty:
                 for _, row in df_client.iterrows():
-                    if row['regel_typ'] == "client_stichwort":
+                    typ = row['regel_typ']
+                    if typ == "client_lieferant":
+                        rules["client_lieferant"][row['lieferant']] = row['konto']
+                    elif typ == "client_stichwort":
                         rules["client_stichwort"][row['suchbegriff']] = row['konto']
                         
     except Exception as e:
@@ -222,25 +257,32 @@ def load_rules(global_path, client_path):
     return rules
 
 def assign_account(desc_norm, desc, supplier_name, supplier_vat, kunden_id, rules):
-    """Weist das Konto basierend auf der 4-stufigen Priorität zu. Gibt (Konto, is_pending) zurück."""
+    """Weist das Konto basierend auf der Priorität zu. Gibt (Konto, is_pending) zurück."""
     desc = str(desc).lower()
     supplier_name = str(supplier_name).lower()
-    supplier_vat = normalize_id(supplier_vat)
-    kunden_id = normalize_id(kunden_id)
+    norm_supplier_vat = normalize_id(supplier_vat)
+    raw_supplier_vat = str(supplier_vat).strip().lower() if supplier_vat else ""
     
-    # 1. Priorität: Kunden-Stichwort-Regel
-    for stich, konto in rules["client_stichwort"].items():
+    # 1. Höchste Priorität: Kunden-Lieferanten-Regel
+    for lief, konto in rules.get("client_lieferant", {}).items():
+        norm_lief = normalize_id(lief)
+        if (lief in supplier_name) or (raw_supplier_vat and lief in raw_supplier_vat) or (norm_lief and norm_lief == norm_supplier_vat):
+            return str(konto), False
+
+    # 2. Priorität: Kunden-Stichwort-Regel
+    for stich, konto in rules.get("client_stichwort", {}).items():
         if stich in desc:
             return str(konto), False
             
-    # 2. Priorität: Globale Stichwort-Regel
-    for stich, konto in rules["global_stichwort"].items():
+    # 3. Priorität: Globale Stichwort-Regel
+    for stich, konto in rules.get("global_stichwort", {}).items():
         if stich in desc:
             return str(konto), False
             
-    # 3. Priorität: Global Lieferant (Suche nach Name oder VAT)
-    for lief, konto in rules["global_lieferant"].items():
-        if lief in supplier_name or lief in supplier_vat:
+    # 4. Priorität: Globale Lieferanten-Regel (Suche nach Name oder VAT)
+    for lief, konto in rules.get("global_lieferant", {}).items():
+        norm_lief = normalize_id(lief)
+        if (lief in supplier_name) or (raw_supplier_vat and lief in raw_supplier_vat) or (norm_lief and norm_lief == norm_supplier_vat):
             return str(konto), False
             
     return "???", False

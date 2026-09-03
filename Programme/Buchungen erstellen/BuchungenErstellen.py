@@ -81,10 +81,17 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             conto = str(db_konten_cache[cache_key]['value'])
             is_pending = not db_konten_cache[cache_key]['confirmed']
         else:
-            import Buchung_Regeln
-            conto, is_pending = Buchung_Regeln.assign_account(
-                item['Desc_Norm'], item['Beschreibung'], item['Lieferant'], item['Liefer ID'], item['Kunden ID'], rules_dict
-            )
+            # Fuzzy Cache Match (gleicher Lieferant, ähnliche Beschreibung)
+            matched_cache = find_fuzzy_cache_match(item['Lieferant'], clean_desc, db_konten_cache)
+            if matched_cache:
+                conto = str(matched_cache['value'])
+                is_pending = not matched_cache['confirmed']
+                db_konten_cache[cache_key] = matched_cache
+            else:
+                import Buchung_Regeln
+                conto, is_pending = Buchung_Regeln.assign_account(
+                    item['Desc_Norm'], item['Beschreibung'], item['Lieferant'], item['Liefer ID'], item['Kunden ID'], rules_dict
+                )
             
         waehrung = item.get('Waehrung', 'EUR')
         
@@ -123,6 +130,34 @@ def is_similar_desc(d1, d2, threshold=0.80):
     if len(d1) > 5 and len(d2) > 5:
         if d1.startswith(d2) or d2.startswith(d1): return True
     return False
+
+def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, threshold=0.80):
+    """
+    Sucht im Konten-Cache nach einem Eintrag desselben Lieferanten mit hinreichend ähnlicher Beschreibung.
+    Gibt das gefundene Dict {'value': konto, 'confirmed': bool} oder None zurück.
+    """
+    if not supplier_name or not desc_to_match or not db_konten_cache:
+        return None
+    supplier_upper = str(supplier_name).strip().upper()
+    desc_upper = str(desc_to_match).strip().upper()
+    best_match = None
+    highest_ratio = 0.0
+
+    for key, data in db_konten_cache.items():
+        if ' | ' in key:
+            k_supp, k_desc = key.split(' | ', 1)
+            k_supp = k_supp.strip()
+            k_desc = k_desc.strip()
+            if k_supp == supplier_upper or (len(k_supp) >= 5 and (k_supp in supplier_upper or supplier_upper in k_supp)):
+                if not k_desc:
+                    continue
+                ratio = SequenceMatcher(None, desc_upper, k_desc).ratio()
+                if is_similar_desc(desc_upper, k_desc, threshold=threshold):
+                    effective_score = max(ratio, threshold)
+                    if effective_score > highest_ratio:
+                        highest_ratio = effective_score
+                        best_match = data
+    return best_match
 
 def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
     if paths is None:

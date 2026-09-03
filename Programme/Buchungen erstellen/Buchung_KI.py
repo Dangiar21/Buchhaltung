@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 from typing import Dict, List, Any
+from difflib import SequenceMatcher
 
 MAX_CONCURRENT_REQUESTS = 2
 CONFIDENCE_THRESHOLD = 8
@@ -279,8 +280,34 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
         if cache_key in memory:
             results[item['id']] = memory[cache_key]
         else:
-            item['cache_key'] = cache_key
-            items_for_api.append(item)
+            # Fuzzy-Fallback im Cache (gleicher Lieferant, ähnlicher Artikel)
+            supplier_upper = str(supplier).strip().upper()
+            desc_upper = str(desc).strip().upper()
+            matched_konto = None
+            highest_ratio = 0.0
+            
+            for m_key, m_konto in memory.items():
+                if " | " in m_key:
+                    k_supp, k_desc = m_key.split(" | ", 1)
+                    k_supp = k_supp.strip()
+                    k_desc = k_desc.strip()
+                    if k_supp == supplier_upper or (len(k_supp) >= 5 and (k_supp in supplier_upper or supplier_upper in k_supp)):
+                        if not k_desc:
+                            continue
+                        ratio = SequenceMatcher(None, desc_upper, k_desc).ratio()
+                        is_sim = (ratio >= 0.80) or (len(desc_upper) >= 5 and len(k_desc) >= 5 and (desc_upper.startswith(k_desc) or k_desc.startswith(desc_upper)))
+                        if is_sim:
+                            score = max(ratio, 0.80)
+                            if score > highest_ratio:
+                                highest_ratio = score
+                                matched_konto = m_konto
+                                
+            if matched_konto:
+                results[item['id']] = matched_konto
+                memory[cache_key] = matched_konto
+            else:
+                item['cache_key'] = cache_key
+                items_for_api.append(item)
             
     if not items_for_api:
         print(f"Alle {len(items_to_classify)} Positionen waren bereits im Cache!")
