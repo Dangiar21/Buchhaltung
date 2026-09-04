@@ -22,6 +22,15 @@ try:
 except ImportError:
     pass
 
+root_dir = os.path.dirname(prog_dir)
+if root_dir not in sys.path:
+    sys.path.append(root_dir)
+
+try:
+    from src.ui.konto_picker import KontoPickerDialog, get_konto_display_map, format_konto_with_name
+except ImportError:
+    pass
+
 class CenterCheckBoxDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         checked = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked
@@ -187,10 +196,12 @@ class CacheTableModel(QAbstractTableModel):
         return False
 
 class CacheEntryDetailDialog(QDialog):
-    def __init__(self, item, parent=None):
+    def __init__(self, item, client_name="", parent=None):
         super().__init__(parent)
+        self.item = item
+        self.client_name = client_name
         self.setWindowTitle("Details zum Cache-Eintrag")
-        self.resize(580, 420)
+        self.resize(600, 440)
         
         qapp = QApplication.instance()
         is_dark = bool(qapp and qapp.palette().window().color().lightness() < 128)
@@ -206,9 +217,18 @@ class CacheEntryDetailDialog(QDialog):
         
         # Status & Konto
         status_badge = "<span style='color: #10b981; font-weight: bold;'>🟢 Bestätigt</span>" if item[1] else "<span style='color: #ef4444; font-weight: bold;'>🔴 Unbestätigt (Vorschlag)</span>"
-        meta_label = QLabel(f"<b style='font-size: 13px;'>Konto / Kategorie:</b> <span style='font-size: 13px;'>{item[4]}</span> &nbsp;&nbsp;|&nbsp;&nbsp; {status_badge}")
-        meta_label.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(meta_label)
+        
+        konto_bar = QHBoxLayout()
+        self.meta_label = QLabel(f"<b style='font-size: 13px;'>Konto / Kategorie:</b> <span style='font-size: 13px;'>{item[4]}</span> &nbsp;&nbsp;|&nbsp;&nbsp; {status_badge}")
+        self.meta_label.setTextFormat(Qt.TextFormat.RichText)
+        konto_bar.addWidget(self.meta_label)
+        konto_bar.addStretch()
+        
+        btn_change_konto = QPushButton("✏️ Ändern...")
+        btn_change_konto.setFixedHeight(28)
+        btn_change_konto.clicked.connect(self.change_konto)
+        konto_bar.addWidget(btn_change_konto)
+        layout.addLayout(konto_bar)
         
         # Vollständige Beschreibung
         lbl_desc = QLabel("<b style='font-size: 13px;'>Vollständige Beschreibung:</b>")
@@ -251,6 +271,14 @@ class CacheEntryDetailDialog(QDialog):
         btn_layout.addWidget(btn_close)
         
         layout.addLayout(btn_layout)
+
+    def change_konto(self):
+        picker = KontoPickerDialog(self, client_name=self.client_name, current_konto=str(self.item[4]))
+        if picker.exec():
+            new_konto = picker.get_selected_konto()
+            self.item[4] = new_konto
+            status_badge = "<span style='color: #10b981; font-weight: bold;'>🟢 Bestätigt</span>" if self.item[1] else "<span style='color: #ef4444; font-weight: bold;'>🔴 Unbestätigt (Vorschlag)</span>"
+            self.meta_label.setText(f"<b style='font-size: 13px;'>Konto / Kategorie:</b> <span style='font-size: 13px;'>{new_konto}</span> &nbsp;&nbsp;|&nbsp;&nbsp; {status_badge}")
 
     def copy_description(self):
         cb = QApplication.clipboard()
@@ -517,10 +545,30 @@ class CacheEditorFrame(QWidget):
             return
         col = index.column()
         row = index.row()
+        client = self.get_client()
         if col in (1, 2):
             item = self.table_model._data[row]
-            dialog = CacheEntryDetailDialog(item, self)
+            dialog = CacheEntryDetailDialog(item, client or "", self)
             dialog.exec()
+            val_updated = item[4]
+            key = item[0]
+            if key in self.current_data:
+                self.current_data[key]['value'] = val_updated
+            self.table_model.dataChanged.emit(index, index)
+        elif col == 3:
+            # Konten-Picker öffnen
+            item = self.table_model._data[row]
+            current_val = item[4]
+            picker = KontoPickerDialog(self, client_name=client or "", current_konto=str(current_val))
+            if picker.exec():
+                new_konto = picker.get_selected_konto()
+                item[4] = new_konto
+                key = item[0]
+                if key in self.current_data:
+                    self.current_data[key]['value'] = new_konto
+                idx = self.table_model.index(row, 3)
+                self.table_model.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DisplayRole])
+                self.show_status(f"Konto geändert: {new_konto} (Klicke auf 'Änderungen speichern')", "#e58e26")
         
     def show_status(self, text, color="text"):
         self.status_label.setText(text)
@@ -558,6 +606,7 @@ class CacheEditorFrame(QWidget):
             db = get_db()
             cache_type = self.cache_type_var.currentText()
             self.current_data = db.get_konten_cache_full(client)
+            self.display_map = get_konto_display_map(client)
         except Exception as e:
             self.show_status(f"Fehler: {e}", "red")
             return
@@ -568,12 +617,18 @@ class CacheEditorFrame(QWidget):
     def apply_filters_and_render(self, *args):
         current_filter = self.filter_var.currentText()
         search_text = self.search_entry.text().lower().strip()
+        display_map = getattr(self, 'display_map', {})
         
         table_data = []
         for key, data_obj in self.current_data.items():
             confirmed = data_obj['confirmed']
             value = data_obj['value']
             val_str = json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value)
+            
+            # Automatisch mit Kontenbezeichnung anreichern
+            val_str = format_konto_with_name(val_str, display_map)
+            data_obj['value'] = val_str
+            
             key_lower = key.lower()
             
             # Status Filter
@@ -603,7 +658,7 @@ class CacheEditorFrame(QWidget):
         self.table_view.resizeColumnToContents(0)
         if self.table_view.columnWidth(1) < 180:
             self.table_view.setColumnWidth(1, 180)
-        self.table_view.setColumnWidth(3, 200)
+        self.table_view.setColumnWidth(3, 260)
         self.table_view.resizeColumnToContents(4)
 
         total_w = self.table_view.viewport().width()
@@ -706,7 +761,7 @@ class CacheEditorFrame(QWidget):
             
         dialog = QDialog(self)
         dialog.setWindowTitle("Neuen Eintrag hinzufügen")
-        dialog.resize(450, 300)
+        dialog.resize(500, 320)
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         
         layout = QFormLayout(dialog)
@@ -718,8 +773,21 @@ class CacheEditorFrame(QWidget):
         desc_var = QLineEdit()
         layout.addRow("Beschreibung (z.B. Kuh 25.12.2006):", desc_var)
         
+        # Konto mit Picker-Auswahl
+        konto_bar = QHBoxLayout()
         val_var = QLineEdit()
-        layout.addRow("Konto (z.B. 4000):", val_var)
+        val_var.setPlaceholderText("Konto auswählen oder eingeben...")
+        konto_bar.addWidget(val_var, stretch=1)
+        
+        btn_pick = QPushButton("🔍 Auswählen...")
+        def open_picker():
+            picker = KontoPickerDialog(dialog, client_name=client, current_konto=val_var.text().strip())
+            if picker.exec():
+                val_var.setText(picker.get_selected_konto())
+        btn_pick.clicked.connect(open_picker)
+        konto_bar.addWidget(btn_pick)
+        
+        layout.addRow("Konto / Kategorie:", konto_bar)
         
         def save():
             lieferant = liefer_var.text().strip()

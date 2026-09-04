@@ -6,6 +6,16 @@ from difflib import SequenceMatcher
 
 # Utils aus dem übergeordneten Ordner laden
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+try:
+    from src.ui.konto_picker import get_konto_display_map, format_konto_with_name
+except Exception:
+    get_konto_display_map = lambda c, base_dir=None: {}
+    format_konto_with_name = lambda k, m: k
+
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -314,6 +324,14 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 except Exception as e:
                     print(f"Fehler beim Lesen der Datenbank: {e}")
             
+            # Kontenplan-Display-Map für den Kunden laden
+            display_map = {}
+            if client_name:
+                try:
+                    display_map = get_konto_display_map(client_name)
+                except Exception as e:
+                    print(f"Fehler beim Laden des Kontenplans: {e}")
+            
             # Lade den DB Cache für den Kunden, um UI-Bestätigungen zu berücksichtigen
             kunden_id_ordner = os.path.basename(os.path.dirname(nutzerdaten_dir)) if nutzerdaten_dir else "Unbekannt"
             try:
@@ -460,16 +478,33 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                                             db_konten_cache[ck] = {'value': other['Unterkonto'], 'confirmed': False}
                                             break
 
-                # Generelle Konvertierung und Hauptkonto-Ableitung
+                # Generelle Konvertierung, Kontenplan-Anreicherung und Hauptkonto-Ableitung
                 for pos in alle_positionen:
+                    raw_konto = pos.get('Unterkonto')
+                    if raw_konto and raw_konto != '???':
+                        enriched_konto = format_konto_with_name(raw_konto, display_map)
+                    else:
+                        enriched_konto = raw_konto
+                    
+                    pos['Unterkonto'] = enriched_konto
+
                     c = pos.get('Unterkonto')
                     if isinstance(c, str):
-                        hauptkonto = c.split('_')[0]
+                        # Hauptkonto ist der Basis-Account (vor Suffixen wie _Kalb)
+                        if " – " in c:
+                            konto_part, name_part = c.split(" – ", 1)
+                            haupt_base = konto_part.split('_')[0].strip()
+                            hauptkonto = f"{haupt_base} – {name_part}" if name_part else haupt_base
+                        elif "_" in c:
+                            hauptkonto = c.split('_')[0].strip()
+                        else:
+                            hauptkonto = c
+                            
                         pos['Hauptkonto'] = hauptkonto
                         
                         if c.isdigit():
                             pos['Unterkonto'] = int(c)
-                        if hauptkonto.isdigit():
+                        if isinstance(hauptkonto, str) and hauptkonto.isdigit():
                             pos['Hauptkonto'] = int(hauptkonto)
                     else:
                         pos['Hauptkonto'] = c

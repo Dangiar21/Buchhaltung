@@ -55,29 +55,15 @@ class ClientManager:
             template_combo.setCurrentText("Codice_Civile_2424")
             form1.addRow("Kontenplan Vorlage (ER & AR)", template_combo)
         else:
+            from src.ui.kontenplan_editor import KontenplanEditorDialog
             def open_editor(typ, title):
-                editor = QDialog(dialog)
-                editor.setWindowTitle(f"{title}: {edit_client_name}")
-                editor.resize(600, 500)
-                editor.setWindowModality(Qt.WindowModality.ApplicationModal)
-                ed_layout = QVBoxLayout(editor)
-                
-                txt = QTextEdit()
-                ed_layout.addWidget(txt)
-                
                 file_path = os.path.join(self.controller.base_kunden_dir, edit_client_name, "Nutzerdaten", f"{typ}_Kontenplan.txt")
-                if os.path.exists(file_path):
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        txt.setPlainText(f.read())
-                        
-                def save_txt():
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(txt.toPlainText())
-                    editor.accept()
-                    
-                btn_s = QPushButton("Speichern")
-                btn_s.clicked.connect(save_txt)
-                ed_layout.addWidget(btn_s)
+                editor = KontenplanEditorDialog(
+                    parent=dialog,
+                    file_path=file_path,
+                    client_name=edit_client_name,
+                    typ=typ
+                )
                 editor.exec()
 
             btn_layout = QHBoxLayout()
