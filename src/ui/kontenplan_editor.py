@@ -1,20 +1,66 @@
 import os
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QLabel,
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QLabel,
     QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
     QTextEdit, QMessageBox, QAbstractItemView, QFormLayout
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QKeySequence
+
+
+def try_parse_tsv_csv_line(line: str) -> Optional[Dict[str, str]]:
+    """
+    Erkennt tabulator-getrennte (Excel Strg+C) oder semikolongetrennte Zeilen.
+    Unterstützt auch getrennte Spalten für Hauptkonto (z.B. 100) und Unterkonto (z.B. 801001).
+    """
+    if '\t' in line:
+        parts = [p.strip() for p in line.split('\t')]
+    elif ';' in line and not line.startswith('#'):
+        parts = [p.strip() for p in line.split(';')]
+    else:
+        return None
+        
+    # Leere Teile am Ende entfernen
+    while parts and not parts[-1]:
+        parts.pop()
+        
+    if not parts or not parts[0]:
+        return None
+        
+    # Header-Zeilen erkennen und überspringen
+    header_keywords = {'konto', 'kontonummer', 'konto-nr', 'account', 'codice', 'mastro', 'sottoconto', 'nr', 'nummer', 'code'}
+    if parts[0].lower() in header_keywords or (len(parts) > 1 and parts[1].lower() in {'name', 'bezeichnung', 'descrizione', 'titel'}):
+        return None
+        
+    # Fall 1: 3+ Spalten, wobei Spalte 0 kurzes Hauptkonto (z. B. "100") und Spalte 1 Unterkonto (z. B. "801001") ist
+    if (len(parts) >= 3 
+        and parts[0].isdigit() and len(parts[0]) <= 3 
+        and (parts[1].isdigit() or '_' in parts[1])
+        and not any(c.isalpha() for c in parts[1].split('_')[0])):
+        konto = f"{parts[0]} / {parts[1]}"
+        name = parts[2]
+        desc = " | ".join(p for p in parts[3:] if p)
+        return {'konto': konto, 'name': name, 'beschreibung': desc}
+        
+    konto = parts[0]
+    name = parts[1] if len(parts) > 1 else ""
+    desc = " | ".join(p for p in parts[2:] if p)
+    
+    # Plausibilitätscheck
+    if not konto:
+        return None
+        
+    return {'konto': konto, 'name': name, 'beschreibung': desc}
 
 
 def parse_kontenplan(raw_text: str) -> List[Dict[str, str]]:
     """
     Parst eine Kontenplan-Textdatei robust in eine Liste von Einträgen:
     [{'konto': '100 / 801001', 'name': 'Materialeinkauf', 'beschreibung': '...'}, ...]
+    Unterstützt sowohl das Standard-Gedankenstrich-Format als auch Zeilen direkt aus Excel (Tab-getrennt).
     """
     entries = []
     lines = [l.strip() for l in raw_text.splitlines()]
@@ -32,6 +78,17 @@ def parse_kontenplan(raw_text: str) -> List[Dict[str, str]]:
     for line in lines:
         if not line:
             continue
+            
+        # 1. Prüfen ob Zeile aus Excel stammt (Tab- oder Semikolongetrennt)
+        tsv_entry = try_parse_tsv_csv_line(line)
+        if tsv_entry:
+            if current_entry:
+                entries.append(current_entry)
+                current_entry = None
+            entries.append(tsv_entry)
+            continue
+            
+        # 2. Standard Header-Muster (z.B. "100 / 801001 – Materialeinkauf")
         m = header_pattern.match(line)
         if m:
             if current_entry:
@@ -243,6 +300,11 @@ class KontenplanEditorDialog(QDialog):
         btn_add.clicked.connect(self.add_konto)
         btn_bar.addWidget(btn_add)
         
+        btn_paste = QPushButton("📋 Aus Excel einfügen (Strg+V)")
+        btn_paste.setToolTip("Fügt aus Excel oder der Zwischenablage kopierte Zeilen direkt ein.")
+        btn_paste.clicked.connect(self.paste_from_clipboard)
+        btn_bar.addWidget(btn_paste)
+        
         btn_edit = QPushButton("✏️ Bearbeiten")
         btn_edit.clicked.connect(self.edit_selected)
         btn_bar.addWidget(btn_edit)
@@ -443,6 +505,71 @@ class KontenplanEditorDialog(QDialog):
             return
         self.entries.sort(key=account_sort_key)
         self.populate_table()
+
+    def keyPressEvent(self, event):
+        # Strg + V im Tab 0 (Strukturierte Übersicht) abfangen
+        if event.matches(QKeySequence.StandardKey.Paste):
+            if self.tab_widget.currentIndex() == 0 and not self.search_edit.hasFocus():
+                self.paste_from_clipboard()
+                return
+        super().keyPressEvent(event)
+
+    def paste_from_clipboard(self):
+        """Liest Kontenzeilen aus der Zwischenablage (z. B. aus Excel) und importiert sie."""
+        cb = QApplication.clipboard()
+        if not cb:
+            return
+        text = cb.text()
+        if not text or not text.strip():
+            QMessageBox.information(self, "Zwischenablage leer", "In der Zwischenablage befindet sich kein Text zum Einfügen.")
+            return
+            
+        new_entries = parse_kontenplan(text)
+        if not new_entries:
+            QMessageBox.warning(
+                self, 
+                "Keine Konten erkannt", 
+                "In der Zwischenablage wurden keine gültigen Kontenzeilen gefunden.\n\n"
+                "Mögliche Excel-Formate:\n"
+                "• Spalte A: Kontonummer, Spalte B: Bezeichnung\n"
+                "• Spalte A: Hauptkonto (z. B. 100), Spalte B: Unterkonto (z. B. 801001), Spalte C: Bezeichnung\n"
+                "• Oder Standard-Zeilen: '100 / 801001 – Bezeichnung'"
+            )
+            return
+            
+        existing_map = {e['konto'].strip().upper(): i for i, e in enumerate(self.entries)}
+        added_count = 0
+        updated_count = 0
+        
+        for ne in new_entries:
+            k = ne['konto'].strip().upper()
+            if k in existing_map:
+                idx = existing_map[k]
+                self.entries[idx]['name'] = ne['name']
+                if ne.get('beschreibung'):
+                    self.entries[idx]['beschreibung'] = ne['beschreibung']
+                updated_count += 1
+            else:
+                self.entries.append(ne)
+                existing_map[k] = len(self.entries) - 1
+                added_count += 1
+                
+        self.entries.sort(key=account_sort_key)
+        self.populate_table()
+        
+        msg_parts = []
+        if added_count > 0:
+            msg_parts.append(f"<b>{added_count}</b> neue(s) Konto/Konten hinzugefügt")
+        if updated_count > 0:
+            msg_parts.append(f"<b>{updated_count}</b> bestehende(s) Konto/Konten aktualisiert")
+            
+        result_msg = " und ".join(msg_parts) if msg_parts else "Keine Änderungen vorgenommen."
+        QMessageBox.information(
+            self, 
+            "Aus Excel / Zwischenablage eingefügt", 
+            f"Erfolgreich übernommen:<br>{result_msg}<br><br>"
+            "Klicke auf <b>'💾 Speichern'</b>, um die Änderungen im Kontenplan zu sichern."
+        )
 
     def on_tab_changed(self, index):
         """Synchronisiert Daten zwischen Tabelle und Rohtext."""
