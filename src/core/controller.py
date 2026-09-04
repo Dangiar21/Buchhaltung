@@ -63,6 +63,124 @@ class AppController:
         db_path = os.path.join(self.base_kunden_dir, "kunden.db")
         self.session = init_db(db_path)
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        
+        self.project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.templates_dir = os.path.join(self.project_root, "Systemdaten", "Templates")
+        os.makedirs(self.templates_dir, exist_ok=True)
+
+    def get_templates_dir(self):
+        return self.templates_dir
+
+    def get_available_templates(self):
+        """Gibt eine sortierte Liste aller Vorlagennamen zurück."""
+        templates = set()
+        if os.path.exists(self.templates_dir):
+            for fname in os.listdir(self.templates_dir):
+                if (fname.startswith("ER_") or fname.startswith("AR_")) and fname.endswith(".txt"):
+                    name = fname[3:-4].strip()
+                    if name:
+                        templates.add(name)
+        result = sorted(list(templates))
+        if not result:
+            result = ["Standard"]
+            self.ensure_template_files("Standard")
+        return result
+
+    def get_template_path(self, template_name, typ):
+        """Gibt den Dateipfad zu einer Vorlagendatei zurück und stellt sicher, dass sie existiert."""
+        clean_name = re.sub(r'[<>:"/\\|?*]', '_', template_name).strip()
+        filename = f"{typ}_{clean_name}.txt"
+        file_path = os.path.join(self.templates_dir, filename)
+        if not os.path.exists(file_path):
+            os.makedirs(self.templates_dir, exist_ok=True)
+            with open(file_path, "w", encoding="utf-8") as f:
+                if typ == "ER":
+                    f.write("- Konto 5000: Wareneinkauf\n- Konto 7000: Dienstleistungen\n")
+                else:
+                    f.write("- Konto 4000: Umsatzerlöse\n")
+        return file_path
+
+    def ensure_template_files(self, template_name):
+        """Stellt sicher, dass sowohl ER als auch AR Vorlagendateien existieren."""
+        for typ in ["ER", "AR"]:
+            self.get_template_path(template_name, typ)
+
+    def create_template(self, template_name, base_template=None):
+        """Erstellt eine neue Kontenplan-Vorlage, optional basierend auf einer bestehenden."""
+        clean_name = re.sub(r'[<>:"/\\|?*]', '_', template_name).strip()
+        if not clean_name:
+            return False, "Der Vorlagenname darf nicht leer sein."
+        
+        er_path = os.path.join(self.templates_dir, f"ER_{clean_name}.txt")
+        ar_path = os.path.join(self.templates_dir, f"AR_{clean_name}.txt")
+        
+        if os.path.exists(er_path) or os.path.exists(ar_path):
+            return False, f"Eine Vorlage mit dem Namen '{clean_name}' existiert bereits."
+            
+        try:
+            os.makedirs(self.templates_dir, exist_ok=True)
+            if base_template and base_template in self.get_available_templates():
+                base_er = self.get_template_path(base_template, "ER")
+                base_ar = self.get_template_path(base_template, "AR")
+                shutil.copy2(base_er, er_path)
+                shutil.copy2(base_ar, ar_path)
+            else:
+                with open(er_path, "w", encoding="utf-8") as f:
+                    f.write("- Konto 5000: Wareneinkauf\n- Konto 7000: Dienstleistungen\n")
+                with open(ar_path, "w", encoding="utf-8") as f:
+                    f.write("- Konto 4000: Umsatzerlöse\n")
+            return True, clean_name
+        except Exception as e:
+            logger.error(f"Fehler beim Erstellen der Vorlage '{clean_name}': {e}")
+            return False, str(e)
+
+    def duplicate_template(self, source_name, new_name):
+        return self.create_template(new_name, base_template=source_name)
+
+    def rename_template(self, old_name, new_name):
+        """Benennt eine Vorlage um."""
+        clean_old = re.sub(r'[<>:"/\\|?*]', '_', old_name).strip()
+        clean_new = re.sub(r'[<>:"/\\|?*]', '_', new_name).strip()
+        if not clean_new:
+            return False, "Der neue Vorlagenname darf nicht leer sein."
+        if clean_old == clean_new:
+            return True, clean_new
+            
+        new_er = os.path.join(self.templates_dir, f"ER_{clean_new}.txt")
+        new_ar = os.path.join(self.templates_dir, f"AR_{clean_new}.txt")
+        if os.path.exists(new_er) or os.path.exists(new_ar):
+            return False, f"Eine Vorlage mit dem Namen '{clean_new}' existiert bereits."
+            
+        try:
+            old_er = self.get_template_path(clean_old, "ER")
+            old_ar = self.get_template_path(clean_old, "AR")
+            shutil.move(old_er, new_er)
+            shutil.move(old_ar, new_ar)
+            return True, clean_new
+        except Exception as e:
+            logger.error(f"Fehler beim Umbenennen der Vorlage '{clean_old}' zu '{clean_new}': {e}")
+            return False, str(e)
+
+    def delete_template(self, template_name):
+        """Löscht eine Vorlage. Mindestens eine Vorlage muss im System verbleiben."""
+        all_templates = self.get_available_templates()
+        if len(all_templates) <= 1:
+            return False, "Die letzte verbleibende Vorlage kann nicht gelöscht werden."
+            
+        clean_name = re.sub(r'[<>:"/\\|?*]', '_', template_name).strip()
+        er_path = os.path.join(self.templates_dir, f"ER_{clean_name}.txt")
+        ar_path = os.path.join(self.templates_dir, f"AR_{clean_name}.txt")
+        
+        try:
+            if os.path.exists(er_path):
+                os.remove(er_path)
+            if os.path.exists(ar_path):
+                os.remove(ar_path)
+            return True, clean_name
+        except Exception as e:
+            logger.error(f"Fehler beim Löschen der Vorlage '{clean_name}': {e}")
+            return False, str(e)
+
 
     def get_all_clients(self):
         try:
@@ -147,18 +265,17 @@ class AppController:
             os.makedirs(os.path.join(client_dir, "Analyse"), exist_ok=True)
             os.makedirs(info_nutzerdaten_dir, exist_ok=True)
             
-            if ensure_konten_template:
-                ensure_konten_template(info_nutzerdaten_dir)
-            
             if template_name:
                 for typ in ["ER", "AR"]:
-                    template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "Systemdaten", "Templates", f"{typ}_{template_name}.txt")
+                    template_path = self.get_template_path(template_name, typ)
                     target_txt_path = os.path.join(info_nutzerdaten_dir, f"{typ}_Kontenplan.txt")
                     if os.path.exists(template_path):
                         shutil.copy2(template_path, target_txt_path)
                     else:
                         with open(target_txt_path, "w", encoding="utf-8") as f:
-                            f.write("HINTERGRUND:\n- Konto 0000: Unbekannt\n\nREGELN:\n")
+                            f.write("- Konto 0000: Unbekannt\n")
+            elif ensure_konten_template:
+                ensure_konten_template(info_nutzerdaten_dir)
             
             success_msg = f"\n=> Kunde '{name}' erfolgreich angelegt!"
 

@@ -296,6 +296,7 @@ class BuchhaltungApp(QMainWindow):
     def show_settings(self):
         self.active_tool = 'settings'
         self.container.setCurrentWidget(self.settings_frame)
+        self.settings_frame.refresh_templates()
         self.reset_sidebar_buttons()
 
     def change_language(self, choice):

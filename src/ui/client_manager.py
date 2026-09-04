@@ -51,9 +51,47 @@ class ClientManager:
         
         template_combo = QComboBox()
         if not is_edit:
-            template_combo.addItems(["Codice_Civile_2424", "Standard"])
-            template_combo.setCurrentText("Codice_Civile_2424")
-            form1.addRow("Kontenplan Vorlage (ER & AR)", template_combo)
+            available_templates = self.controller.get_available_templates()
+            template_combo.addItems(available_templates)
+            if "Codice_Civile_2424" in available_templates:
+                template_combo.setCurrentText("Codice_Civile_2424")
+            elif available_templates:
+                template_combo.setCurrentIndex(0)
+
+            from src.ui.kontenplan_editor import KontenplanEditorDialog
+            def preview_selected_template():
+                cur_tmpl = template_combo.currentText()
+                if not cur_tmpl:
+                    return
+                dlg_typ = QDialog(dialog)
+                dlg_typ.setWindowTitle(f"Vorlage '{cur_tmpl}' ansehen")
+                dl = QVBoxLayout(dlg_typ)
+                dl.addWidget(QLabel(f"Welchen Teil der Vorlage <b>'{cur_tmpl}'</b> möchten Sie prüfen/bearbeiten?"))
+                btn_h = QHBoxLayout()
+                b_er = QPushButton("Eingangsrechnungen (ER)")
+                b_ar = QPushButton("Ausgangsrechnungen (AR)")
+                btn_h.addWidget(b_er)
+                btn_h.addWidget(b_ar)
+                dl.addLayout(btn_h)
+
+                def open_t(typ):
+                    dlg_typ.accept()
+                    fp = self.controller.get_template_path(cur_tmpl, typ)
+                    ed = KontenplanEditorDialog(parent=dialog, file_path=fp, client_name=f"Vorlage: {cur_tmpl}", typ=typ)
+                    ed.exec()
+
+                b_er.clicked.connect(lambda: open_t("ER"))
+                b_ar.clicked.connect(lambda: open_t("AR"))
+                dlg_typ.exec()
+
+            tmpl_row = QHBoxLayout()
+            tmpl_row.addWidget(template_combo, stretch=1)
+            btn_view_tmpl = QPushButton("🔍 Vorlage prüfen")
+            btn_view_tmpl.setToolTip("Die ausgewählte Kontenplan-Vorlage vorab ansehen oder anpassen")
+            btn_view_tmpl.clicked.connect(preview_selected_template)
+            tmpl_row.addWidget(btn_view_tmpl)
+
+            form1.addRow("Kontenplan Vorlage (ER & AR)", tmpl_row)
         else:
             from src.ui.kontenplan_editor import KontenplanEditorDialog
             def open_editor(typ, title):
