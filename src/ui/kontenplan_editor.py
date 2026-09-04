@@ -319,6 +319,11 @@ class KontenplanEditorDialog(QDialog):
         btn_sort.clicked.connect(self.sort_by_konto)
         btn_bar.addWidget(btn_sort)
         
+        btn_ai_learn = QPushButton("✨ Beispiele aus Excel lernen (KI)")
+        btn_ai_learn.setToolTip("Lerne neue Beispiele aus einer Buchungs-Excel und füge sie per KI hinzu.")
+        btn_ai_learn.clicked.connect(self.open_ai_learner)
+        btn_bar.addWidget(btn_ai_learn)
+        
         btn_bar.addStretch()
         tab_layout.addLayout(btn_bar)
         
@@ -598,3 +603,34 @@ class KontenplanEditorDialog(QDialog):
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Speicherfehler", f"Fehler beim Speichern der Datei:\n{e}")
+
+    def open_ai_learner(self):
+        """Öffnet den KI-Beispiel-Generator für diesen Kontenplan."""
+        from src.ui.kontenplan_learner_dialog import KontenplanLearnerDialog
+        ctrl = None
+        curr = self.parent()
+        while curr:
+            if hasattr(curr, "controller"):
+                ctrl = curr.controller
+                break
+            curr = curr.parent()
+            
+        if not ctrl:
+            try:
+                from src.core.controller import AppController
+                base_kunden_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "Kunden"
+                )
+                ctrl = AppController(base_kunden_dir)
+            except Exception:
+                pass
+
+        dlg = KontenplanLearnerDialog(
+            parent=self,
+            controller=ctrl,
+            initial_client=self.client_name,
+            initial_typ=self.typ,
+            initial_file_path=self.file_path
+        )
+        dlg.kontenplan_updated.connect(self.load_file)
+        dlg.exec()

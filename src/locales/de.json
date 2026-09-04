@@ -7,5 +7,8 @@
   "btn_files": "Dateien auswählen",
   "btn_folder": "Ordner auswählen",
   "welcome_msg": "Willkommen bei der Buchhaltungs Suite!\nZiehe deine Dateien oder Ordner einfach in den Bereich oben.",
-  "switch_dark": "Dark Mode"
+  "switch_dark": "Dark Mode",
+  "btn_kontenplan_learner": "KI-Beispiel-Generator",
+  "kontenplan_learner_title": "KI-Beispiel-Generator aus Buchungs-Excel",
+  "btn_learn_from_excel": "✨ Beispiele aus Excel lernen (KI)"
 }

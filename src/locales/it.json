@@ -7,5 +7,8 @@
   "btn_files": "Seleziona file",
   "btn_folder": "Seleziona cartelle",
   "welcome_msg": "Benvenuto nella Suite di Contabilità!\nTrascina i tuoi file o cartelle nell'area in alto.",
-  "switch_dark": "Modalità Scura"
+  "switch_dark": "Modalità Scura",
+  "btn_kontenplan_learner": "Generatore Esempi AI",
+  "kontenplan_learner_title": "Generatore Esempi AI da Excel Registrazioni",
+  "btn_learn_from_excel": "✨ Impara esempi da Excel (AI)"
 }

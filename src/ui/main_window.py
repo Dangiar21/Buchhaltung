@@ -173,6 +173,12 @@ class BuchhaltungApp(QMainWindow):
         self.sidebar_btn_5.clicked.connect(self.show_cache_editor)
         self.sidebar_layout.addWidget(self.sidebar_btn_5)
 
+        self.sidebar_btn_learner = QPushButton(translator.get(self.lang, 'btn_kontenplan_learner', default="KI-Beispiel-Generator"))
+        self.sidebar_btn_learner.setObjectName("SidebarBtn")
+        self.sidebar_btn_learner.setIcon(qta.icon('fa5s.magic', color='#8c98a4'))
+        self.sidebar_btn_learner.clicked.connect(self.show_kontenplan_learner)
+        self.sidebar_layout.addWidget(self.sidebar_btn_learner)
+
         self.sidebar_layout.addStretch()
 
         self.btn_settings = QPushButton(" Einstellungen")
@@ -293,6 +299,17 @@ class BuchhaltungApp(QMainWindow):
         if hasattr(self.cache_editor_frame, 'load_data'):
             self.cache_editor_frame.load_data()
 
+    def show_kontenplan_learner(self):
+        from src.ui.kontenplan_learner_dialog import KontenplanLearnerDialog
+        current_client = self.current_client if hasattr(self, 'current_client') and self.current_client != "Kein Kunde" else None
+        dlg = KontenplanLearnerDialog(
+            parent=self,
+            controller=self.controller,
+            initial_client=current_client,
+            initial_typ="ER"
+        )
+        dlg.exec()
+
     def show_settings(self):
         self.active_tool = 'settings'
         self.container.setCurrentWidget(self.settings_frame)
@@ -306,6 +323,7 @@ class BuchhaltungApp(QMainWindow):
         self.sidebar_btn_2.setText(translator.get(self.lang, 'btn_xml_to_excel'))
         self.sidebar_btn_csv.setText(translator.get(self.lang, 'btn_csv_to_excel', default='CSV zu Excel'))
         self.sidebar_btn_3.setText(translator.get(self.lang, 'btn_buchung_erstellen'))
+        self.sidebar_btn_learner.setText(translator.get(self.lang, 'btn_kontenplan_learner', default='KI-Beispiel-Generator'))
 
         self.settings_frame.update_ui_text(self.lang)
             
