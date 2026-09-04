@@ -108,15 +108,15 @@ QScrollArea > QWidget > QWidget {
     font-weight: bold;
 }
 
-/* Suchen Input */
-QLineEdit {
+/* Suchen Input & SpinBox */
+QLineEdit, QSpinBox {
     background-color: #ffffff;
     border: 1px solid #e0e6ed;
     border-radius: 6px;
     padding: 6px 10px;
     font-size: 10pt;
 }
-QLineEdit:focus {
+QLineEdit:focus, QSpinBox:focus {
     border: 1px solid #3a7ebf;
 }
 

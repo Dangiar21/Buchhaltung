@@ -9,7 +9,8 @@ class ConfigManager:
             "appearance_mode": "Light",
             "last_client": None,
             "recent_clients": [],
-            "shorten_desc": False
+            "shorten_desc": False,
+            "confidence_threshold": 8
         }
         self.config = self.load()
 

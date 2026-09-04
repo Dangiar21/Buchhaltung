@@ -8,6 +8,20 @@ from utils import is_similar_desc, is_generic_auxiliary
 
 MAX_CONCURRENT_REQUESTS = 2
 CONFIDENCE_THRESHOLD = 8
+
+def get_confidence_threshold() -> int:
+    """Liest den Konfidenz-Schwellenwert (1-10) aus config.json, Fallback auf 8."""
+    try:
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        config_path = os.path.join(base_dir, "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                val = cfg.get("confidence_threshold", CONFIDENCE_THRESHOLD)
+                return max(1, min(10, int(val)))
+    except Exception:
+        pass
+    return CONFIDENCE_THRESHOLD
 GEMINI_MODELS = [
     "gemini-3.8-flash",
     "gemini-3.7-flash",
@@ -68,6 +82,9 @@ def build_system_instruction(nutzerdaten_dir: str, is_stage2: bool = False, is_e
             
     instruction = "Du bist ein KI-Buchhalter für den italienischen SDI Standard.\n"
     instruction += "Deine Aufgabe ist es, Rechnungs-Artikel einem passenden FIBU-Konto zuzuordnen.\n\n"
+    instruction += "WICHTIGER SPRACHHINWEIS (DEUTSCH & ITALIENISCH):\n"
+    instruction += "- Die Daten, Rechnungsbeschreibungen, Artikelbezeichnungen, Lieferantennamen und Kontenpläne können sowohl in deutscher als auch in italienischer Sprache oder zweisprachig gemischt vorliegen (z.B. Südtirol / Italien).\n"
+    instruction += "- Verstehe und analysiere Begriffe in beiden Sprachen gleichwertig und ordne sie treffsicher dem passenden Konto zu.\n\n"
     instruction += client_info
     instruction += f"HINTERGRUND ({typ_prefix}-Kontenplan):\n"
     instruction += kontenplan_text + "\n\n"
@@ -82,7 +99,8 @@ def build_system_instruction(nutzerdaten_dir: str, is_stage2: bool = False, is_e
         instruction += "5. Der Wert muss ein JSON-Objekt sein mit 3 Schlüsseln: 'gedankengang' (Erklärung in 1 Satz), 'konfidenz' (Zahl von 1 bis 10), und 'konto' (exaktes Konto).\n"
         instruction += "6. Berücksichtige zwingend die Branche des Käufers und was beim Lieferanten gekauft wurde.\n"
         instruction += "BEISPIEL-ANTWORT:\n"
-        instruction += "{\n  \"0\": {\n    \"gedankengang\": \"Käufer ist Metzger, Verkäufer ist Bäcker, Produkt ist Brot -> Wareneinkauf\",\n    \"konfidenz\": 9,\n    \"konto\": \"100 / 801006\"\n  }\n}"
+        instruction += "{\n  \"0\": {\n    \"gedankengang\": \"Käufer ist Metzger, Verkäufer ist Bäcker, Produkt ist Brot -> Wareneinkauf\",\n    \"konfidenz\": 9,\n    \"konto\": \"100 / 801006\"\n  },\n"
+        instruction += "  \"1\": {\n    \"gedankengang\": \"Fornitura materiale cancelleria da fornitore ufficio -> Spese ufficio\",\n    \"konfidenz\": 9,\n    \"konto\": \"100 / 801020\"\n  }\n}"
     else:
         instruction += "5. Der Wert ist ausschließlich das exakte Konto (z.B. 100 / 801006_Kalb) genau wie im Kontenplan gelistet als String.\n"
         instruction += "6. Du MUSST dich zwingend für ein Konto entscheiden. Lass den Wert NIEMALS leer, auch wenn du unsicher bist. Wähle das wahrscheinlichste.\n"
@@ -166,7 +184,7 @@ async def call_gemini_api_with_retry(model_name, system_instruction, prompt_text
 
 
 
-async def process_batch_stage1(chunk, system_instruction_stage1, batch_num, total_batches, sem, results) -> List[Dict[str, Any]]:
+async def process_batch_stage1(chunk, system_instruction_stage1, batch_num, total_batches, sem, results, confidence_threshold=None) -> List[Dict[str, Any]]:
     global cancel_requested
     
     if cancel_requested:
@@ -177,7 +195,7 @@ async def process_batch_stage1(chunk, system_instruction_stage1, batch_num, tota
             return []
             
         print(f"-> Starte Stufe 1 Batch {batch_num}/{total_batches} ({len(chunk)} Artikel)...")
-        prompt_text = "Bitte klassifiziere folgende Artikel:\n"
+        prompt_text = "Bitte klassifiziere folgende Artikel (Beschreibungen und Daten können in Deutsch oder Italienisch sein):\n"
         for local_idx, item in enumerate(chunk):
             prompt_text += f"ID: {local_idx} | "
             for k, v in item.items():
@@ -213,7 +231,8 @@ async def process_batch_stage1(chunk, system_instruction_stage1, batch_num, tota
                                     konfidenz = int(data.get("konfidenz", 0))
                                 except (ValueError, TypeError):
                                     konfidenz = 0
-                                if konfidenz >= CONFIDENCE_THRESHOLD:
+                                threshold = confidence_threshold if confidence_threshold is not None else get_confidence_threshold()
+                                if konfidenz >= threshold:
                                     global_id = chunk[local_idx]['id']
                                     results[global_id] = str(data.get("konto", "")).strip()
                                     geloeste_local_indices.add(local_idx)
@@ -240,7 +259,7 @@ async def process_batch_stage2(chunk, system_instruction_stage2, batch_num, tota
             return False
             
         print(f"-> Starte Stufe 2 Batch {batch_num}/{total_batches} ({len(chunk)} Artikel) [Flash-Wasserfall]...")
-        prompt_text_2 = "Bitte analysiere folgende schwierige Faelle:\n"
+        prompt_text_2 = "Bitte analysiere folgende schwierige Faelle (Beschreibungen und Daten können in Deutsch oder Italienisch sein):\n"
         for local_idx, item in enumerate(chunk):
             prompt_text_2 += f"ID: {local_idx} | "
             for k, v in item.items():
@@ -377,11 +396,12 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
     
     # --- STUFE 1: Vorfilterung ueber Lite-Modell ---
     total_batches_s1 = len(chunks_stage1)
+    current_threshold = get_confidence_threshold()
     completed_batches_s1 = 0
     
     async def process_and_track_s1(chunk, i):
         nonlocal completed_batches_s1
-        batch_unsichere = await process_batch_stage1(chunk, system_instruction_stage1, i + 1, total_batches_s1, sem, results)
+        batch_unsichere = await process_batch_stage1(chunk, system_instruction_stage1, i + 1, total_batches_s1, sem, results, confidence_threshold=current_threshold)
         completed_batches_s1 += 1
         percent = 20 + int((completed_batches_s1 / total_batches_s1) * 40)
         print(f"[PROGRESS:{percent}]")
@@ -399,7 +419,7 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
             all_unsichere.extend(out)
             
     geloest_s1 = len(results)
-    print(f"\nStufe 1 beendet: {geloest_s1}/{total_items} Positionen direkt geloest (Konfidenz >= {CONFIDENCE_THRESHOLD}/10).")
+    print(f"\nStufe 1 beendet: {geloest_s1}/{total_items} Positionen direkt geloest (Konfidenz >= {current_threshold}/10).")
     
     # --- STUFE 2: Unsichere Faelle sammeln und in 15er-Bloecken an Flash-Wasserfall senden ---
     if all_unsichere and not cancel_requested:

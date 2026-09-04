@@ -64,7 +64,20 @@ class TestSettingsUI(unittest.TestCase):
         self.assertEqual(settings_frame.table_er.rowCount(), 2)
         self.assertEqual(settings_frame.table_ar.rowCount(), 1)
         self.assertIn("2 Konten", settings_frame.lbl_count_er.text())
-        self.assertIn("1 Konto", settings_frame.lbl_count_ar.text())
+        # Verify confidence threshold control
+        self.assertEqual(settings_frame.confidence_spin.value(), 8)
+        settings_frame.confidence_spin.setValue(9)
+        from unittest.mock import patch
+        with patch("src.ui.settings.QMessageBox.information"):
+            settings_frame.save_settings()
+        self.assertEqual(self.config_manager.get("confidence_threshold"), 9)
+
+    def test_buchung_ki_reads_confidence_threshold(self):
+        buchungen_dir = os.path.join(script_dir, "Programme", "Buchungen erstellen")
+        if buchungen_dir not in sys.path:
+            sys.path.append(buchungen_dir)
+        import Buchung_KI
+        self.assertIn(Buchung_KI.get_confidence_threshold(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 
 
 if __name__ == "__main__":

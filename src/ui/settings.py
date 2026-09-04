@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QCheckBox, 
     QComboBox, QLineEdit, QPushButton, QMessageBox, QFrame, QApplication,
     QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QInputDialog, QDialog, QSplitter
+    QInputDialog, QDialog, QSplitter, QSpinBox
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt
@@ -186,6 +186,23 @@ class SettingsFrame(QWidget):
         lbl_api = QLabel("Gemini API Key:")
         lbl_api.setFont(QFont("", -1, QFont.Weight.Bold))
         form_layout.addRow(lbl_api, self.api_key_entry)
+        
+        # KI-Konfidenz (Stufe 1)
+        conf_layout = QHBoxLayout()
+        self.confidence_spin = QSpinBox()
+        self.confidence_spin.setRange(1, 10)
+        self.confidence_spin.setValue(self.config_manager.get("confidence_threshold", 8))
+        self.confidence_spin.setFixedWidth(70)
+        conf_layout.addWidget(self.confidence_spin)
+        
+        lbl_conf_hint = QLabel("Mindest-Konfidenz (1-10) für Stufe 1 (Lite-Modell). Liegt der Wert darunter, prüft Stufe 2 (Flash-Wasserfall). (Standard: 8)")
+        lbl_conf_hint.setStyleSheet("color: #64748b; font-size: 9.5pt;")
+        conf_layout.addWidget(lbl_conf_hint)
+        conf_layout.addStretch()
+        
+        lbl_conf = QLabel("KI-Konfidenz (Stufe 1):")
+        lbl_conf.setFont(QFont("", -1, QFont.Weight.Bold))
+        form_layout.addRow(lbl_conf, conf_layout)
         
         layout.addWidget(content_frame)
         
@@ -555,5 +572,9 @@ class SettingsFrame(QWidget):
                     pass
         except Exception as e:
             logger.error(f"Fehler beim Speichern des API-Keys: {e}")
+            
+        # KI-Konfidenz speichern
+        conf_val = self.confidence_spin.value()
+        self.config_manager.set("confidence_threshold", conf_val)
             
         QMessageBox.information(self, "Erfolg", "Einstellungen gespeichert!")
