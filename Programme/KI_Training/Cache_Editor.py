@@ -6,10 +6,10 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QTableView, QHeaderView, QFrame,
     QCheckBox, QMessageBox, QDialog, QFormLayout, QAbstractItemView,
     QStyledItemDelegate, QStyleOptionButton, QStyle, QApplication,
-    QStyleOptionViewItem
+    QStyleOptionViewItem, QPlainTextEdit
 )
-from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal, QTimer, QRect
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex, pyqtSignal, QTimer, QRect, QPointF
+from PyQt6.QtGui import QFont, QColor, QPainter, QPen
 import qtawesome as qta
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,32 +25,59 @@ except ImportError:
 class CenterCheckBoxDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         checked = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked
+        is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
         
-        self.initStyleOption(option, index)
-        # Prevent default checkbox from being drawn
-        option.features &= ~QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        # Check dark mode
+        qapp = QApplication.instance()
+        is_dark = bool(qapp and qapp.palette().window().color().lightness() < 128)
         
-        # Remove hover/selection states so it doesn't turn blue
-        option.state &= ~QStyle.StateFlag.State_MouseOver
-        option.state &= ~QStyle.StateFlag.State_Selected
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        option.widget.style().drawControl(QStyle.ControlElement.CE_ItemViewItem, option, painter, option.widget)
-        
-        opt = QStyleOptionButton()
-        opt.state |= QStyle.StateFlag.State_Enabled
-        if checked:
-            opt.state |= QStyle.StateFlag.State_On
+        # 1. Background
+        if is_selected:
+            painter.fillRect(option.rect, QColor("#1e3a5f" if is_dark else "#e4f0fa"))
         else:
-            opt.state |= QStyle.StateFlag.State_Off
+            row = index.row()
+            if is_dark:
+                bg = QColor("#1f1f23") if row % 2 == 1 else QColor("#18181b")
+            else:
+                bg = QColor("#f8fafc") if row % 2 == 1 else QColor("#ffffff")
+            painter.fillRect(option.rect, bg)
             
-        check_box_rect = QApplication.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, opt, None)
-        w = check_box_rect.width()
-        h = check_box_rect.height()
-        x = option.rect.x() + (option.rect.width() - w) // 2
-        y = option.rect.y() + (option.rect.height() - h) // 2
-        opt.rect = QRect(x, y, w, h)
+        # Cell bottom border
+        painter.setPen(QPen(QColor("#27272a" if is_dark else "#f1f5f9"), 1))
+        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
         
-        QApplication.style().drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorCheckBox, opt, painter)
+        # 2. Checkbox Indicator
+        box_size = 18
+        x = option.rect.x() + (option.rect.width() - box_size) // 2
+        y = option.rect.y() + (option.rect.height() - box_size) // 2
+        box_rect = QRect(x, y, box_size, box_size)
+        
+        if checked:
+            # Checked: Bright blue rounded box with crisp white checkmark
+            painter.setBrush(QColor("#3a7ebf"))
+            painter.setPen(QColor("#3a7ebf"))
+            painter.drawRoundedRect(box_rect, 4, 4)
+            
+            pen = QPen(QColor("#ffffff"), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            p1 = QPointF(x + 4.5, y + 9.5)
+            p2 = QPointF(x + 7.5, y + 13.0)
+            p3 = QPointF(x + 13.5, y + 5.5)
+            painter.drawLine(p1, p2)
+            painter.drawLine(p2, p3)
+        else:
+            # Unchecked: Neutral box with clear border
+            box_bg = QColor("#27272a" if is_dark else "#ffffff")
+            border_col = QColor("#38bdf8" if is_dark else "#3a7ebf") if is_hover else QColor("#52525b" if is_dark else "#cbd5e1")
+            painter.setBrush(box_bg)
+            painter.setPen(QPen(border_col, 1.8))
+            painter.drawRoundedRect(box_rect, 4, 4)
+            
+        painter.restore()
 
     def editorEvent(self, event, model, option, index):
         if event.type() in [event.Type.MouseButtonRelease, event.Type.MouseButtonDblClick]:
@@ -98,6 +125,24 @@ class CacheTableModel(QAbstractTableModel):
             elif col == 3:
                 return item[4]
                 
+        elif role == Qt.ItemDataRole.ToolTipRole:
+            if col == 0:
+                return "Status: Bestätigt (Grün)" if item[1] else "Status: Unbestätigt (Rot, Vorschlag/Entwurf)"
+            elif col == 1:
+                return f"Lieferant:\n{item[2]}"
+            elif col == 2:
+                desc = str(item[3])
+                if "[KONTEXT:" in desc:
+                    parts = desc.split("[KONTEXT:")
+                    main_d = parts[0].strip()
+                    ctx_d = parts[1].rstrip("]").strip()
+                    return f"Beschreibung:\n{main_d}\n\nRechnungskontext:\n{ctx_d}"
+                return f"Vollständige Beschreibung:\n{desc}"
+            elif col == 3:
+                return f"Konto / Kategorie:\n{item[4]}"
+            elif col == 4:
+                return "Zeile für Sammelaktionen auswählen"
+
         elif role == Qt.ItemDataRole.TextAlignmentRole:
             if col == 0:
                 return Qt.AlignmentFlag.AlignCenter
@@ -141,6 +186,77 @@ class CacheTableModel(QAbstractTableModel):
             
         return False
 
+class CacheEntryDetailDialog(QDialog):
+    def __init__(self, item, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Details zum Cache-Eintrag")
+        self.resize(580, 420)
+        
+        qapp = QApplication.instance()
+        is_dark = bool(qapp and qapp.palette().window().color().lightness() < 128)
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+        layout.setContentsMargins(22, 22, 22, 22)
+        
+        # Lieferant
+        lieferant_label = QLabel(f"<b style='font-size: 13px;'>Lieferant:</b> <span style='font-size: 13px;'>{item[2]}</span>")
+        lieferant_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(lieferant_label)
+        
+        # Status & Konto
+        status_badge = "<span style='color: #10b981; font-weight: bold;'>🟢 Bestätigt</span>" if item[1] else "<span style='color: #ef4444; font-weight: bold;'>🔴 Unbestätigt (Vorschlag)</span>"
+        meta_label = QLabel(f"<b style='font-size: 13px;'>Konto / Kategorie:</b> <span style='font-size: 13px;'>{item[4]}</span> &nbsp;&nbsp;|&nbsp;&nbsp; {status_badge}")
+        meta_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(meta_label)
+        
+        # Vollständige Beschreibung
+        lbl_desc = QLabel("<b style='font-size: 13px;'>Vollständige Beschreibung:</b>")
+        lbl_desc.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(lbl_desc)
+        
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setPlainText(str(item[3]))
+        bg_col = "#27272a" if is_dark else "#ffffff"
+        text_col = "#f4f4f5" if is_dark else "#1e293b"
+        border_col = "#3f3f46" if is_dark else "#cbd5e1"
+        self.text_edit.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background-color: {bg_col};
+                color: {text_col};
+                border: 1px solid {border_col};
+                border-radius: 8px;
+                padding: 10px;
+                font-family: 'Segoe UI', Inter, sans-serif;
+                font-size: 13px;
+                line-height: 1.4;
+            }}
+        """)
+        layout.addWidget(self.text_edit, stretch=1)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_copy = QPushButton(" In Zwischenablage kopieren")
+        btn_copy.setIcon(qta.icon('fa5s.copy', color='#38bdf8' if is_dark else '#3a7ebf'))
+        btn_copy.setFixedHeight(34)
+        btn_copy.clicked.connect(self.copy_description)
+        btn_layout.addWidget(btn_copy)
+        
+        btn_layout.addStretch()
+        
+        btn_close = QPushButton("Schließen")
+        btn_close.setFixedHeight(34)
+        btn_close.clicked.connect(self.accept)
+        btn_layout.addWidget(btn_close)
+        
+        layout.addLayout(btn_layout)
+
+    def copy_description(self):
+        cb = QApplication.clipboard()
+        if cb:
+            cb.setText(self.text_edit.toPlainText())
+
 class CacheEditorFrame(QWidget):
     def __init__(self, master, current_client_callback):
         super().__init__(master)
@@ -171,54 +287,8 @@ class CacheEditorFrame(QWidget):
         # --- 2. Controls Card ---
         self.controls_card = QFrame()
         self.controls_card.setObjectName("ControlsCard")
-        self.controls_card.setStyleSheet("""
-            #ControlsCard {
-                background-color: #f8fafc;
-                border-radius: 12px;
-                border: 1px solid #e2e8f0;
-            }
-            QComboBox {
-                padding: 6px 10px;
-                border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                background-color: white;
-            }
-            QLineEdit {
-                padding: 6px 10px;
-                border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                background-color: white;
-            }
-            QPushButton {
-                padding: 6px 15px;
-                border-radius: 6px;
-                font-weight: bold;
-                border: none;
-            }
-            QPushButton#BtnRefresh { background-color: white; border: 1px solid #cbd5e1; }
-            QPushButton#BtnRefresh:hover { background-color: #f1f5f9; }
-            QPushButton#BtnRefresh:pressed { background-color: #e2e8f0; }
-
-            QPushButton#BtnSelectAll { background-color: white; border: 1px solid #cbd5e1; color: #475569; }
-            QPushButton#BtnSelectAll:hover { background-color: #f1f5f9; }
-            QPushButton#BtnSelectAll:pressed { background-color: #e2e8f0; }
-
-            QPushButton#BtnConfirm { background-color: #2e9e63; color: white; }
-            QPushButton#BtnConfirm:hover { background-color: #278654; }
-            QPushButton#BtnConfirm:pressed { background-color: #1e6b43; }
-
-            QPushButton#BtnDelete { background-color: #cc0000; color: white; }
-            QPushButton#BtnDelete:hover { background-color: #b30000; }
-            QPushButton#BtnDelete:pressed { background-color: #800000; }
-
-            QPushButton#BtnSave { background-color: #e58e26; color: white; }
-            QPushButton#BtnSave:hover { background-color: #d18123; }
-            QPushButton#BtnSave:pressed { background-color: #b36e1e; }
-
-            QPushButton#BtnAdd { background-color: #3a7ebf; color: white; }
-            QPushButton#BtnAdd:hover { background-color: #326ca3; }
-            QPushButton#BtnAdd:pressed { background-color: #275682; }
-        """)
+        self.update_card_style()
+        
         controls_layout = QVBoxLayout(self.controls_card)
         controls_layout.setContentsMargins(20, 20, 20, 20)
         controls_layout.setSpacing(15)
@@ -249,6 +319,7 @@ class CacheEditorFrame(QWidget):
         btn_refresh.setIcon(qta.icon('fa5s.sync-alt', color='#475569'))
         btn_refresh.setFixedWidth(40)
         btn_refresh.setFixedHeight(32)
+        btn_refresh.setToolTip("Daten neu laden")
         btn_refresh.clicked.connect(self.load_data)
         filter_layout.addWidget(btn_refresh)
         
@@ -278,6 +349,23 @@ class CacheEditorFrame(QWidget):
         self.batch_delete_btn.setFixedHeight(32)
         self.batch_delete_btn.clicked.connect(self.batch_delete)
         batch_layout.addWidget(self.batch_delete_btn)
+
+        self.expand_btn = QPushButton(" Ausklappen")
+        self.expand_btn.setObjectName("BtnExpand")
+        self.expand_btn.setCheckable(True)
+        self.expand_btn.setIcon(qta.icon('fa5s.expand-alt', color='#475569'))
+        self.expand_btn.setFixedHeight(32)
+        self.expand_btn.setToolTip("Zeilenhöhe anpassen, um lange Beschreibungen mehrzeilig auszuklappen")
+        self.expand_btn.toggled.connect(self.toggle_row_expansion)
+        batch_layout.addWidget(self.expand_btn)
+
+        self.autofit_btn = QPushButton(" Spalten anpassen")
+        self.autofit_btn.setObjectName("BtnAutofit")
+        self.autofit_btn.setIcon(qta.icon('fa5s.arrows-alt-h', color='#475569'))
+        self.autofit_btn.setFixedHeight(32)
+        self.autofit_btn.setToolTip("Spaltenbreiten automatisch an die Textlänge anpassen")
+        self.autofit_btn.clicked.connect(self.autofit_columns)
+        batch_layout.addWidget(self.autofit_btn)
         
         batch_layout.addStretch()
         
@@ -311,12 +399,128 @@ class CacheEditorFrame(QWidget):
         self.table_view.setAlternatingRowColors(True)
         self.table_view.horizontalHeader().setStretchLastSection(False)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.table_view.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table_view.setSortingEnabled(True) 
+        self.table_view.setSortingEnabled(True)
+        self.table_view.setMouseTracking(True)
+        self.table_view.doubleClicked.connect(self.on_table_double_clicked)
         
         self.main_layout.addWidget(self.table_view, stretch=1)
         
         self.current_data = {}
+
+    def update_card_style(self):
+        qapp = QApplication.instance()
+        is_dark = bool(qapp and qapp.palette().window().color().lightness() < 128)
+        
+        card_bg = "#1f1f23" if is_dark else "#f8fafc"
+        card_border = "#27272a" if is_dark else "#e2e8f0"
+        input_bg = "#27272a" if is_dark else "white"
+        input_border = "#3f3f46" if is_dark else "#cbd5e1"
+        input_color = "#f4f4f5" if is_dark else "#1e293b"
+        
+        neutral_btn_bg = "#27272a" if is_dark else "white"
+        neutral_btn_border = "#3f3f46" if is_dark else "#cbd5e1"
+        neutral_btn_color = "#e4e4e7" if is_dark else "#475569"
+        neutral_btn_hover = "#3f3f46" if is_dark else "#f1f5f9"
+        neutral_btn_pressed = "#18181b" if is_dark else "#e2e8f0"
+        
+        checked_bg = "#1e3a5f" if is_dark else "#e0f2fe"
+        checked_border = "#38bdf8" if is_dark else "#38bdf8"
+        checked_color = "#38bdf8" if is_dark else "#0369a1"
+
+        self.controls_card.setStyleSheet(f"""
+            #ControlsCard {{
+                background-color: {card_bg};
+                border-radius: 12px;
+                border: 1px solid {card_border};
+            }}
+            QComboBox {{
+                padding: 6px 10px;
+                border: 1px solid {input_border};
+                border-radius: 6px;
+                background-color: {input_bg};
+                color: {input_color};
+            }}
+            QLineEdit {{
+                padding: 6px 10px;
+                border: 1px solid {input_border};
+                border-radius: 6px;
+                background-color: {input_bg};
+                color: {input_color};
+            }}
+            QPushButton {{
+                padding: 6px 15px;
+                border-radius: 6px;
+                font-weight: bold;
+                border: none;
+            }}
+            QPushButton#BtnRefresh {{ background-color: {neutral_btn_bg}; border: 1px solid {neutral_btn_border}; color: {neutral_btn_color}; }}
+            QPushButton#BtnRefresh:hover {{ background-color: {neutral_btn_hover}; }}
+            QPushButton#BtnRefresh:pressed {{ background-color: {neutral_btn_pressed}; }}
+
+            QPushButton#BtnSelectAll {{ background-color: {neutral_btn_bg}; border: 1px solid {neutral_btn_border}; color: {neutral_btn_color}; }}
+            QPushButton#BtnSelectAll:hover {{ background-color: {neutral_btn_hover}; }}
+            QPushButton#BtnSelectAll:pressed {{ background-color: {neutral_btn_pressed}; }}
+
+            QPushButton#BtnExpand {{ background-color: {neutral_btn_bg}; border: 1px solid {neutral_btn_border}; color: {neutral_btn_color}; }}
+            QPushButton#BtnExpand:hover {{ background-color: {neutral_btn_hover}; }}
+            QPushButton#BtnExpand:checked {{ background-color: {checked_bg}; border: 1px solid {checked_border}; color: {checked_color}; }}
+
+            QPushButton#BtnAutofit {{ background-color: {neutral_btn_bg}; border: 1px solid {neutral_btn_border}; color: {neutral_btn_color}; }}
+            QPushButton#BtnAutofit:hover {{ background-color: {neutral_btn_hover}; }}
+            QPushButton#BtnAutofit:pressed {{ background-color: {neutral_btn_pressed}; }}
+
+            QPushButton#BtnConfirm {{ background-color: #2e9e63; color: white; }}
+            QPushButton#BtnConfirm:hover {{ background-color: #278654; }}
+            QPushButton#BtnConfirm:pressed {{ background-color: #1e6b43; }}
+
+            QPushButton#BtnDelete {{ background-color: #cc0000; color: white; }}
+            QPushButton#BtnDelete:hover {{ background-color: #b30000; }}
+            QPushButton#BtnDelete:pressed {{ background-color: #800000; }}
+
+            QPushButton#BtnSave {{ background-color: #e58e26; color: white; }}
+            QPushButton#BtnSave:hover {{ background-color: #d18123; }}
+            QPushButton#BtnSave:pressed {{ background-color: #b36e1e; }}
+
+            QPushButton#BtnAdd {{ background-color: #3a7ebf; color: white; }}
+            QPushButton#BtnAdd:hover {{ background-color: #326ca3; }}
+            QPushButton#BtnAdd:pressed {{ background-color: #275682; }}
+        """)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.update_card_style()
+
+    def toggle_row_expansion(self, checked):
+        qapp = QApplication.instance()
+        is_dark = bool(qapp and qapp.palette().window().color().lightness() < 128)
+        if checked:
+            self.expand_btn.setText(" Einklappen")
+            self.expand_btn.setIcon(qta.icon('fa5s.compress-alt', color='#38bdf8' if is_dark else '#3a7ebf'))
+            self.table_view.setWordWrap(True)
+            self.table_view.resizeRowsToContents()
+        else:
+            self.expand_btn.setText(" Ausklappen")
+            self.expand_btn.setIcon(qta.icon('fa5s.expand-alt', color='#475569'))
+            self.table_view.setWordWrap(False)
+            self.table_view.verticalHeader().setDefaultSectionSize(36)
+            for r in range(self.table_model.rowCount()):
+                self.table_view.setRowHeight(r, 36)
+
+    def autofit_columns(self):
+        for c in range(self.table_model.columnCount()):
+            self.table_view.resizeColumnToContents(c)
+        if self.table_view.columnWidth(2) < 300:
+            self.table_view.setColumnWidth(2, 300)
+
+    def on_table_double_clicked(self, index):
+        if not index.isValid():
+            return
+        col = index.column()
+        row = index.row()
+        if col in (1, 2):
+            item = self.table_model._data[row]
+            dialog = CacheEntryDetailDialog(item, self)
+            dialog.exec()
         
     def show_status(self, text, color="text"):
         self.status_label.setText(text)
@@ -333,8 +537,8 @@ class CacheEditorFrame(QWidget):
         for row in self.table_model._data:
             row[6] = new_state
             
-        top_left = self.table_model.index(0, 0)
-        bottom_right = self.table_model.index(len(self.table_model._data) - 1, 0)
+        top_left = self.table_model.index(0, 4)
+        bottom_right = self.table_model.index(len(self.table_model._data) - 1, 4)
         self.table_model.dataChanged.emit(top_left, bottom_right, [Qt.ItemDataRole.CheckStateRole])
 
     def get_client(self):
@@ -397,9 +601,21 @@ class CacheEditorFrame(QWidget):
         
         # Resize columns after populating
         self.table_view.resizeColumnToContents(0)
-        if self.table_view.columnWidth(1) < 150: self.table_view.setColumnWidth(1, 150)
-        self.table_view.setColumnWidth(3, 250)
+        if self.table_view.columnWidth(1) < 180:
+            self.table_view.setColumnWidth(1, 180)
+        self.table_view.setColumnWidth(3, 200)
         self.table_view.resizeColumnToContents(4)
+
+        total_w = self.table_view.viewport().width()
+        col0_w = self.table_view.columnWidth(0)
+        col1_w = self.table_view.columnWidth(1)
+        col3_w = self.table_view.columnWidth(3)
+        col4_w = self.table_view.columnWidth(4)
+        rem = total_w - (col0_w + col1_w + col3_w + col4_w) - 10
+        self.table_view.setColumnWidth(2, max(380, rem))
+
+        if hasattr(self, 'expand_btn') and self.expand_btn.isChecked():
+            self.table_view.resizeRowsToContents()
 
     def get_selected_keys(self):
         keys = set()

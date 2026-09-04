@@ -10,6 +10,7 @@ import keyring
 
 from src.core.translations import translator
 from src.core.logger import setup_logger
+from src.ui.theme import apply_theme
 
 logger = logging.getLogger(__name__)
 
@@ -84,17 +85,6 @@ class SettingsFrame(QWidget):
         lbl_api.setFont(QFont("", -1, QFont.Weight.Bold))
         form_layout.addRow(lbl_api, self.api_key_entry)
         
-        # Globale Begriffe Button
-        btn_globale_begriffe = QPushButton("Globale Begriffsliste bearbeiten")
-        # In PyQt, self.app.open_globale_begriffe isn't implemented in the dummy app yet, but it was in the old code.
-        # We need to make sure main_window.py has it, or we add it back.
-        if hasattr(self.app, "open_globale_begriffe"):
-            btn_globale_begriffe.clicked.connect(self.app.open_globale_begriffe)
-        
-        lbl_dedup = QLabel("Deduplizierung:")
-        lbl_dedup.setFont(QFont("", -1, QFont.Weight.Bold))
-        form_layout.addRow(lbl_dedup, btn_globale_begriffe)
-        
         self.main_layout.addWidget(content_frame)
         
         # Save Button
@@ -112,13 +102,7 @@ class SettingsFrame(QWidget):
     def toggle_appearance_mode(self, checked):
         new_mode = "Dark" if checked else "Light"
         self.config_manager.set("appearance_mode", new_mode)
-        
-        # Load new style
-        style_file = "style_dark.qss" if checked else "style.qss"
-        style_path = os.path.join(os.path.dirname(__file__), style_file)
-        if os.path.exists(style_path):
-            with open(style_path, "r", encoding="utf-8") as f:
-                QApplication.instance().setStyleSheet(f.read())
+        apply_theme(QApplication.instance(), new_mode)
         
     def update_ui_text(self, lang):
         self.settings_mode_switch.setText(translator.get(lang, 'switch_dark'))

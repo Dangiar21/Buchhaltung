@@ -20,7 +20,7 @@ def normalize_id(val):
     return '0' if not stripped else stripped
 
 def ensure_rule_file(file_path):
-    """Erstellt oder aktualisiert die Excel-Datei mit Kontenregeln (Fügt fehlende Reiter und Dropdowns hinzu)."""
+    """Erstellt oder aktualisiert die Excel-Datei mit Kontenregeln (stellt Lieferanten- und Stichwort-Reiter sicher und entfernt alte Kontenplan-Reiter)."""
     modified = False
     
     if os.path.exists(file_path):
@@ -31,35 +31,10 @@ def ensure_rule_file(file_path):
             del wb['Sheet']
         modified = True
         
-    if "Kontenplan" not in wb.sheetnames:
-        ws_konten = wb.create_sheet("Kontenplan")
-        ws_konten.append(["Konto-Nummer", "Bezeichnung", "Dropdown (Wird automatisch erstellt)"])
-        default_accounts = [
-            ("0100", "Anlagevermögen"),
-            ("4000", "Umsatzerlöse"),
-            ("5000", "Materialaufwand / Wareneinkauf"),
-            ("7000", "Dienstleistungen"),
-            ("7010", "Telefon und Internet"),
-            ("7020", "Strom"),
-        ]
-        for idx, acc in enumerate(default_accounts, start=2):
-            ws_konten.append([acc[0], acc[1], f'=IF(A{idx}<>"", A{idx} & " - " & B{idx}, "")'])
-            
-        # Formeln für den Rest der Spalte C auffüllen
-        for i in range(len(default_accounts) + 2, 1001):
-            ws_konten[f'C{i}'] = f'=IF(A{i}<>"", A{i} & " - " & B{i}, "")'
-            
-        for cell in ws_konten[1]: cell.font = Font(bold=True)
-        ws_konten.column_dimensions['A'].width = 15
-        ws_konten.column_dimensions['B'].width = 30
-        ws_konten.column_dimensions['C'].width = 40
-    else:
-        ws_konten = wb["Kontenplan"]
-        if ws_konten['C1'].value != "Dropdown (Wird automatisch erstellt)":
-            ws_konten['C1'] = "Dropdown (Wird automatisch erstellt)"
-            for i in range(2, 1001):
-                ws_konten[f'C{i}'] = f'=IF(A{i}<>"", A{i} & " - " & B{i}, "")'
-            ws_konten.column_dimensions['C'].width = 40
+    # Veraltete Kontenplan-Reiter entfernen (da Kontenpläne nun über .txt verwaltet werden)
+    for old_sheet in ["Kontenplan", "Sheet1"]:
+        if old_sheet in wb.sheetnames and len(wb.sheetnames) > 1:
+            del wb[old_sheet]
             modified = True
 
     if "Lieferanten-Regeln" not in wb.sheetnames:
@@ -78,36 +53,17 @@ def ensure_rule_file(file_path):
         ws_stich.column_dimensions['B'].width = 15
         modified = True
 
-
-
-    # Check and add Data Validations
-    dv_formula = "'Kontenplan'!$C$2:$C$1000"
-    
-    ws_lief = wb["Lieferanten-Regeln"]
-    has_dv = any(dv.formula1 == dv_formula for dv in ws_lief.data_validations.dataValidation)
-    if not has_dv:
-        ws_lief.data_validations.dataValidation = []
-        dv_lief = DataValidation(type="list", formula1=dv_formula, allow_blank=True)
-        dv_lief.error = 'Das eingegebene Konto existiert nicht im Kontenplan!'
-        dv_lief.errorTitle = 'Ungültiges Konto'
-        dv_lief.prompt = 'Bitte ein Konto aus der Dropdown-Liste wählen'
-        dv_lief.promptTitle = 'Konto auswählen'
-        ws_lief.add_data_validation(dv_lief)
-        dv_lief.add("B2:B1000")
-        modified = True
-
-    ws_stich = wb["Stichwort-Regeln"]
-    has_dv_stich = any(dv.formula1 == dv_formula for dv in ws_stich.data_validations.dataValidation)
-    if not has_dv_stich:
-        ws_stich.data_validations.dataValidation = []
-        dv_stich = DataValidation(type="list", formula1=dv_formula, allow_blank=True)
-        dv_stich.error = 'Das eingegebene Konto existiert nicht im Kontenplan!'
-        dv_stich.errorTitle = 'Ungültiges Konto'
-        dv_stich.prompt = 'Bitte ein Konto aus der Dropdown-Liste wählen'
-        dv_stich.promptTitle = 'Konto auswählen'
-        ws_stich.add_data_validation(dv_stich)
-        dv_stich.add("B2:B1000")
-        modified = True
+    # Alte DataValidations entfernen, die auf den gelöschten Kontenplan verwiesen haben
+    for sheet_name in ["Lieferanten-Regeln", "Stichwort-Regeln"]:
+        if sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            valid_dvs = []
+            for dv in ws.data_validations.dataValidation:
+                if dv.formula1 and "Kontenplan" in str(dv.formula1):
+                    modified = True
+                else:
+                    valid_dvs.append(dv)
+            ws.data_validations.dataValidation = valid_dvs
 
 
 

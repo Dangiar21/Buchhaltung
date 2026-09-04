@@ -23,6 +23,8 @@ from src.ui.client_manager import ClientManager
 from src.ui.tools import build_tool_frame
 from Programme.KI_Training.Cache_Editor import CacheEditorFrame
 
+from src.ui.theme import apply_theme
+
 logger = logging.getLogger(__name__)
 
 # QObject for signals
@@ -37,13 +39,10 @@ class BuchhaltungApp(QMainWindow):
         
         self.setWindowTitle("Buchhaltung Suite")
         self.resize(1100, 700)
-        # Apply custom style.qss (or style_dark.qss)
+        
+        # Apply theme and palette based on appearance mode
         appearance = self.config_manager.get("appearance_mode", "Light")
-        style_file = "style_dark.qss" if appearance == "Dark" else "style.qss"
-        style_path = os.path.join(os.path.dirname(__file__), style_file)
-        if os.path.exists(style_path):
-            with open(style_path, "r", encoding="utf-8") as f:
-                QApplication.instance().setStyleSheet(f.read())
+        apply_theme(QApplication.instance(), appearance)
 
         base_kunden_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "Kunden")
         self.controller = AppController(base_kunden_dir)
@@ -497,23 +496,5 @@ class BuchhaltungApp(QMainWindow):
         if paths:
             self.process_paths(paths)
 
-    def open_globale_begriffe(self):
-        try:
-            from Programme.GlobalTerms import ensure_global_terms_file, get_global_terms_path
-            import subprocess
-            import sys
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            ensure_global_terms_file(base_dir)
-            
-            setup_path = get_global_terms_path(base_dir)
-            logger.info(f"Öffne {setup_path}...")
-            if os.name == 'nt' or sys.platform == 'win32':
-                os.startfile(setup_path)
-            elif sys.platform == 'darwin':
-                subprocess.run(['open', setup_path], check=True)
-            else:
-                subprocess.run(['xdg-open', setup_path], check=True)
-        except Exception as e:
-            logger.error(f"Fehler beim Öffnen der Globalen Begriffe: {e}")
 
 

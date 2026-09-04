@@ -197,6 +197,7 @@ class ClientManager:
                 error_label.setText(f"Fehler: {final_name}")
 
         btn_save = QPushButton("Speichern")
+        btn_save.setObjectName("PrimaryBtn")
         btn_save.setMinimumHeight(40)
         btn_save.clicked.connect(save_client)
         layout.addWidget(btn_save)

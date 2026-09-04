@@ -5,45 +5,84 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 
-SIGNAL_WORDS = {
+SIGNAL_ROOTS = {
     # Energie & Versorgung (DE & IT)
-    "GAS", "METANO", "STROM", "ENERGIE", "ENERGIA", "ELEKTRIZITÄT", "ELETTRICA", "ELETTRO", "WASSER", "ACQUA", "IDRICO", 
-    "FERNWÄRME", "TELERISCALDAMENTO", "PELLETS", "HOLZ", "LEGNA", "MÜLL", "RIFIUTI", "TARI",
+    "GAS": lambda w: (w.startswith("GAS") and not w.startswith("GAST")) or w.endswith("GAS") or w == "GAS" or "ERDGAS" in w,
+    "METANO": lambda w: "METANO" in w,
+    "STROM": lambda w: "STROM" in w or "ELETTRIC" in w or "ELETTRO" in w,
+    "ENERGIE": lambda w: "ENERGIE" in w or "ENERGIA" in w,
+    "WASSER": lambda w: "WASSER" in w or "ACQUA" in w or "IDRIC" in w,
+    "FERNWÄRME": lambda w: "FERNWÄRME" in w or "TELERISCALD" in w,
+    "PELLETS": lambda w: "PELLET" in w,
+    "HOLZ": lambda w: "HOLZ" in w or "LEGNA" in w,
+    "MÜLL": lambda w: "MÜLL" in w or "RIFIUT" in w or "TARI" in w,
     # Treibstoffe (DE & IT)
-    "DIESEL", "GASOLIO", "BENZIN", "BENZINA", "ADBLUE", "CARBURANTE", "LPG", "GPL",
+    "DIESEL": lambda w: "DIESEL" in w or "GASOLIO" in w,
+    "BENZIN": lambda w: "BENZIN" in w,
+    "ADBLUE": lambda w: "ADBLUE" in w,
+    "LPG": lambda w: w in ("LPG", "GPL"),
     # Fleisch & Lebensmittel (DE & IT)
-    "RIND", "MANZO", "BOVINO", "KALB", "VITELLO", "SCHWEIN", "MAIALE", "SUINO", "GEFLÜGEL", "POLLAME", 
-    "HUHN", "POLLO", "LAMM", "AGNELLO", "FISCH", "PESCE", "BROT", "PANE", "MEHL", "FARINA", 
-    "MILCH", "LATTE", "KÄSE", "FORMAGGIO",
+    "RIND": lambda w: "RIND" in w or "BOVIN" in w or "MANZO" in w,
+    "KALB": lambda w: "KALB" in w or "VITELL" in w,
+    "SCHWEIN": lambda w: "SCHWEIN" in w or "SUIN" in w or "MAIALE" in w,
+    "GEFLÜGEL": lambda w: "GEFLÜGEL" in w or "POLLAM" in w,
+    "HUHN": lambda w: "HUHN" in w or "HÄHNCHEN" in w or "POLLO" in w,
+    "LAMM": lambda w: "LAMM" in w or "AGNELL" in w,
+    "FISCH": lambda w: "FISCH" in w or "PESCE" in w,
+    "BROT": lambda w: "BROT" in w or w == "PANE",
+    "MEHL": lambda w: "MEHL" in w or "FARINA" in w,
+    "MILCH": lambda w: "MILCH" in w or "LATTE" in w,
+    "KÄSE": lambda w: "KÄSE" in w or "FORMAGG" in w,
     # Kostenarten & Dienstleistungen
-    "MIETE", "LOCAZIONE", "AFFITTO", "VERSICHERUNG", "ASSICURAZIONE", "ZINSEN", "INTERESSI", 
-    "TELEFON", "TELEFONO", "INTERNET", "CONNECTIVITY", "BERATUNG", "CONSULENZA", 
-    "REINIGUNG", "PULIZIA", "TRANSPORT", "TRASPORTO", "FRACHT", "PORTO", "SPEDIZIONE", 
-    "WARTUNG", "MANUTENZIONE", "REPARATUR", "RIPARAZIONE", "LEASING", "NOLEGGIO"
+    "MIETE": lambda w: "MIET" in w or "LOCAZION" in w or "AFFITT" in w,
+    "VERSICHERUNG": lambda w: "VERSICHER" in w or "ASSICURAZ" in w,
+    "ZINSEN": lambda w: "ZINS" in w or "INTERESS" in w,
+    "TELEFON": lambda w: "TELEFON" in w,
+    "INTERNET": lambda w: "INTERNET" in w or "CONNECTIV" in w,
+    "BERATUNG": lambda w: "BERATUNG" in w or "CONSULENZ" in w,
+    "REINIGUNG": lambda w: "REINIG" in w or "PULIZI" in w,
+    "WARTUNG": lambda w: "WARTUNG" in w or "MANUTENZ" in w,
+    "REPARATUR": lambda w: "REPARATUR" in w or "RIPARAZ" in w,
+    "LEASING": lambda w: "LEASING" in w or "NOLEGG" in w,
 }
 
-GENERIC_AUXILIARY_TERMS = {
-    "STEUERN", "STEUER", "IMPOSTE", "IMPOSTA", "ACCISE", "ACCISA", 
-    "SPESEN", "SPESE", "GEBÜHREN", "GEBÜHR", "RUNDUNG", "RUNDUNGEN", 
-    "ONERI", "ONERE", "ADDIZIONALE", "CANONE", "QUOTA FISSA", "BOLLO", "MARCA DA BOLLO"
+GENERIC_AUXILIARY_KEYWORDS = {
+    # Netzausgaben & Transport / Zähler
+    "NETZAUSGABEN", "NETZKOSTEN", "NETZENTGELT", "NETZ", "TRASPORTO", "CONTATORE",
+    # Systemaufwendungen
+    "SYSTEMAUFWENDUNGEN", "SYSTEMKOSTEN", "SYSTEMGEBÜHREN", "ONERI", "ONERE",
+    # Steuern, Gebühren & Abgaben
+    "STEUERN", "STEUER", "GEBÜHREN", "GEBÜHR", "ABGABEN", "ABGABE", "IMPOSTE", "IMPOSTA", "TASSE", "TASSA", 
+    "ACCISE", "ACCISA", "ADDIZIONALE", "CANONE", "BOLLO", "MARCA DA BOLLO",
+    # Allgemeine Spesen & Nebenkosten
+    "SPESEN", "SPESE", "NEBENKOSTEN", "RUNDUNG", "RUNDUNGEN", "VERSAND", "FRACHT", "PORTO", "SPEDIZIONE", "INCASSO"
 }
 
 def extract_signal_words(text: str) -> set:
     if not text:
         return set()
-    tokens = set(re.findall(r'\b[A-ZÄÖÜa-zäöü0-9]+\b', text.upper()))
-    return tokens & SIGNAL_WORDS
+    words = re.findall(r'[A-ZÄÖÜa-zäöü0-9]+', text.upper())
+    matched = set()
+    for w in words:
+        for root, matcher in SIGNAL_ROOTS.items():
+            if matcher(w):
+                matched.add(root)
+    return matched
 
 def is_generic_auxiliary(desc: str) -> bool:
-    """Prüft, ob eine Beschreibung ein reiner, unspezifischer Nebenkostenbegriff ist (z.B. 'Steuern', 'Spesen')."""
+    """Prüft, ob eine Beschreibung ein reiner, unspezifischer Nebenkostenbegriff ist (z.B. 'Steuern', 'Spesen', 'Netzausgaben')."""
     if not desc:
         return False
-    words = [w for w in re.findall(r'\b[A-ZÄÖÜa-zäöü0-9]+\b', desc.upper()) if w]
-    if not words:
+    desc_clean = desc.upper().strip()
+    
+    # Wenn ein Träger-Signalwort vorkommt (z.B. GAS, ENERGIE, DIESEL, FLEISCH), ist es KEINE generische Nebenposition
+    sig_words = extract_signal_words(desc_clean)
+    commodity_signals = sig_words - {"TRANSPORT", "SPEDIZIONE", "FRACHT", "PORTO"}
+    if commodity_signals:
         return False
-    if len(words) <= 2:
-        return any(w in GENERIC_AUXILIARY_TERMS for w in words)
-    return desc.upper().strip() in GENERIC_AUXILIARY_TERMS
+        
+    words = re.findall(r'[A-ZÄÖÜa-zäöü0-9]+', desc_clean)
+    return any(any(k in w for k in GENERIC_AUXILIARY_KEYWORDS) for w in words)
 
 def is_similar_desc(d1: str, d2: str, threshold: float = 0.80) -> bool:
     if not d1 or not d2:

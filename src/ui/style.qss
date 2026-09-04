@@ -4,6 +4,15 @@
     color: #2c3e50;
 }
 
+QToolTip {
+    background-color: #1e293b;
+    color: #ffffff;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 10pt;
+}
+
 /* Hauptfenster (Main Canvas) */
 QMainWindow {
     background-color: #f0f4f8;

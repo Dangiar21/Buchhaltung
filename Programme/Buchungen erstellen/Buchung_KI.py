@@ -3,7 +3,8 @@ import json
 import asyncio
 from typing import Dict, List, Any
 from difflib import SequenceMatcher
-from utils import is_similar_desc
+import re
+from utils import is_similar_desc, is_generic_auxiliary
 
 MAX_CONCURRENT_REQUESTS = 2
 CONFIDENCE_THRESHOLD = 8
@@ -124,6 +125,7 @@ async def call_gemini_api_with_retry(model_name, system_instruction, prompt_text
                         system_instruction=system_instruction,
                         response_mime_type="application/json",
                         temperature=0.1,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                     ),
                 )
             response = await asyncio.to_thread(_call)
@@ -321,20 +323,23 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
             matched_konto = None
             highest_ratio = 0.0
             
-            for m_key, m_konto in memory.items():
-                if " | " in m_key:
-                    k_supp, k_desc = m_key.split(" | ", 1)
-                    k_supp = k_supp.strip()
-                    k_desc = k_desc.strip()
-                    if k_supp == supplier_upper or (len(k_supp) >= 5 and (k_supp in supplier_upper or supplier_upper in k_supp)):
-                        if not k_desc:
-                            continue
-                        ratio = SequenceMatcher(None, desc_upper, k_desc).ratio()
-                        if is_similar_desc(desc_upper, k_desc, threshold=0.80):
-                            score = max(ratio, 0.80)
-                            if score > highest_ratio:
-                                highest_ratio = score
-                                matched_konto = m_konto
+            # Nebenpositionen dürfen niemals generisch per Fuzzy gematcht werden, da sie vom Kontext abhängen
+            if not is_generic_auxiliary(desc):
+                for m_key, m_konto in memory.items():
+                    if " | " in m_key:
+                        k_supp, k_desc = m_key.split(" | ", 1)
+                        k_supp = k_supp.strip()
+                        k_desc = k_desc.strip()
+                        k_desc_clean = re.sub(r'\s*\[KONTEXT:.*?\]', '', k_desc, flags=re.IGNORECASE).strip()
+                        if k_supp == supplier_upper or (len(k_supp) >= 5 and (k_supp in supplier_upper or supplier_upper in k_supp)):
+                            if not k_desc_clean:
+                                continue
+                            ratio = SequenceMatcher(None, desc_upper, k_desc_clean).ratio()
+                            if is_similar_desc(desc_upper, k_desc_clean, threshold=0.80):
+                                score = max(ratio, 0.80)
+                                if score > highest_ratio:
+                                    highest_ratio = score
+                                    matched_konto = m_konto
                                 
             if matched_konto:
                 results[item['id']] = matched_konto

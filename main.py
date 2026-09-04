@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QApplication
 
 if __name__ == "__main__":
     qapp = QApplication(sys.argv)
+    qapp.setStyle("Fusion")
     app = BuchhaltungApp()
     app.show()
     sys.exit(qapp.exec())

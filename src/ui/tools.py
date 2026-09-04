@@ -20,49 +20,26 @@ class DropZoneFrame(QFrame):
         self.tool_id = tool_id
         self.setAcceptDrops(True)
         
-        # Styling
         self.setObjectName("DropZone")
-        self.setStyleSheet("""
-            #DropZone {
-                background-color: palette(alternate-base);
-                border: 2px dashed palette(mid);
-                border-radius: 15px;
-            }
-        """)
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(15)
-        shadow.setColor(Qt.GlobalColor.black)
-        shadow.setOffset(0, 4)
-        # self.setGraphicsEffect(shadow)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setProperty("dragActive", False)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
-            self.setStyleSheet("""
-                #DropZone {
-                    background-color: #e4f0fa;
-                    border: 2px dashed #3a7ebf;
-                    border-radius: 15px;
-                }
-            """)
+            self.setProperty("dragActive", True)
+            self.style().unpolish(self)
+            self.style().polish(self)
             event.acceptProposedAction()
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet("""
-            #DropZone {
-                background-color: #f8fafc;
-                border: 2px dashed #cbd5e1;
-                border-radius: 15px;
-            }
-        """)
+        self.setProperty("dragActive", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def dropEvent(self, event):
-        self.setStyleSheet("""
-            #DropZone {
-                background-color: #f8fafc;
-                border: 2px dashed #cbd5e1;
-                border-radius: 15px;
-            }
-        """)
+        self.setProperty("dragActive", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
         paths = []
         for url in event.mimeData().urls():
             paths.append(url.toLocalFile())

@@ -6,6 +6,12 @@ from difflib import SequenceMatcher
 
 # Utils aus dem übergeordneten Ordner laden
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 from utils import load_or_create_targa_list, append_new_targas_to_excel, ask_shorten_desc, get_text, safe_float, read_xml_or_p7m, is_similar_desc, is_generic_auxiliary
 
 # 1. Wir versuchen die Module zu laden. Wenn das fehlschlägt, fangen wir den Fehler ab.
@@ -21,9 +27,8 @@ except Exception as e:
 
 
 from sdi_parser import parse_sdi_xml
-from Programme.GlobalTerms import apply_global_terms
 
-def clean_description_for_dedup(desc, global_terms=None):
+def clean_description_for_dedup(desc):
     if not desc: return ""
     desc = desc.upper()
     original_for_fallback = re.sub(r'[()/\-:]', ' ', desc).strip()
@@ -52,42 +57,71 @@ def clean_description_for_dedup(desc, global_terms=None):
     if not desc:
         desc = re.sub(r'\s+', ' ', original_for_fallback).strip()
         
-    # 3. Globale Begriffsliste anwenden (Priorität)
-    if global_terms:
-        desc = apply_global_terms(desc, global_terms)
-        
     return desc
 
-def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=False, client_vat_id="", db_konten_cache=None, global_terms=None):
+def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=False, client_vat_id="", db_konten_cache=None):
     if db_konten_cache is None: db_konten_cache = {}
     print(f"Lese: {xml_path}")
     
     parsed_items = parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_description, client_vat_id)
     rechnungspositionen = []
     
-    # Hauptleistung der Rechnung ermitteln (Sachposition mit höchstem Gesamtpreis, die kein reiner Nebenkostenbegriff ist)
+    # 1. Hauptleistung der Rechnung ermitteln (Sachposition mit höchstem Gesamtpreis, die kein reiner Nebenkostenbegriff ist)
     invoice_main_desc = ""
+    invoice_main_item = None
     max_amount = -1.0
     for it in parsed_items:
         it_desc = it.get('Beschreibung', '').strip()
-        it_clean = clean_description_for_dedup(it_desc, global_terms)
+        it_clean = clean_description_for_dedup(it_desc)
         it_amount = abs(safe_float(str(it.get('Gesamtpreis_Roh', 0.0)), 0.0))
         if not is_generic_auxiliary(it_clean) and it_amount > max_amount and it_clean:
             max_amount = it_amount
             invoice_main_desc = it_clean
+            invoice_main_item = it
             
     # Falls alle Positionen generisch sind (z.B. reine Gebührenrechnung), nimm die größte Position als Fallback
     if not invoice_main_desc and parsed_items:
         for it in parsed_items:
             it_desc = it.get('Beschreibung', '').strip()
-            it_clean = clean_description_for_dedup(it_desc, global_terms)
+            it_clean = clean_description_for_dedup(it_desc)
             it_amount = abs(safe_float(str(it.get('Gesamtpreis_Roh', 0.0)), 0.0))
             if it_amount > max_amount and it_clean:
                 max_amount = it_amount
                 invoice_main_desc = it_clean
+                invoice_main_item = it
+
+    # 2. Konto der Hauptleistung vorab ermitteln (falls bereits in Regeln oder Cache vorhanden)
+    main_conto = "???"
+    main_is_pending = True
+    if invoice_main_item:
+        main_clean = clean_description_for_dedup(invoice_main_item.get('Beschreibung', ''))
+        # a) Regeln
+        m_conto, m_pending = Buchung_Regeln.assign_account(
+            invoice_main_item['Desc_Norm'], invoice_main_item['Beschreibung'],
+            invoice_main_item['Lieferant'], invoice_main_item['Liefer ID'], invoice_main_item['Kunden ID'],
+            rules_dict
+        )
+        if m_conto != "???":
+            main_conto = m_conto
+            main_is_pending = m_pending
+        else:
+            # b) Cache
+            main_cache_key = f"{invoice_main_item['Lieferant']} | {main_clean}".strip().upper()
+            main_cache_raw = f"{invoice_main_item['Lieferant']} | {invoice_main_item['Beschreibung']}".strip().upper()
+            if main_cache_key in db_konten_cache:
+                main_conto = str(db_konten_cache[main_cache_key]['value'])
+                main_is_pending = not db_konten_cache[main_cache_key]['confirmed']
+            elif main_cache_raw in db_konten_cache:
+                main_conto = str(db_konten_cache[main_cache_raw]['value'])
+                main_is_pending = not db_konten_cache[main_cache_raw]['confirmed']
+            else:
+                m_match = find_fuzzy_cache_match(invoice_main_item['Lieferant'], main_clean, db_konten_cache)
+                if m_match:
+                    main_conto = str(m_match['value'])
+                    main_is_pending = not m_match['confirmed']
     
     for item in parsed_items:
-        clean_desc = clean_description_for_dedup(item['Beschreibung'], global_terms)
+        clean_desc = clean_description_for_dedup(item['Beschreibung'])
         is_aux = is_generic_auxiliary(clean_desc)
         rechnung_kontext = invoice_main_desc if (is_aux and invoice_main_desc and invoice_main_desc != clean_desc) else ""
 
@@ -97,27 +131,43 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             item['Desc_Norm'], item['Beschreibung'], item['Lieferant'], item['Liefer ID'], item['Kunden ID'], rules_dict
         )
         
-        # 2. Priorität: Falls keine Regel greift, im Datenbank-Cache (Historie / frühere Bestätigungen) suchen
+        # 2. Priorität: Falls keine Regel greift, im Datenbank-Cache suchen oder von Hauptleistung erben
         if conto == "???":
-            if rechnung_kontext:
-                cache_key = f"{item['Lieferant']} | {clean_desc} [KONTEXT: {rechnung_kontext}]".strip().upper()
+            if is_aux:
+                # Bei Nebenpositionen (Netzausgaben, Steuern/Gebühren, Spesen):
+                # Prüfe zuerst, ob genau dieser Kontext schon im Cache liegt
+                cache_key_ctx = f"{item['Lieferant']} | {clean_desc} [KONTEXT: {rechnung_kontext}]".strip().upper()
+                if rechnung_kontext and cache_key_ctx in db_konten_cache:
+                    conto = str(db_konten_cache[cache_key_ctx]['value'])
+                    is_pending = not db_konten_cache[cache_key_ctx]['confirmed']
+                elif main_conto != "???":
+                    # Vererbung: Nebenpositionen teilen das Konto der Hauptleistung (z.B. Gas -> 810004)!
+                    conto = main_conto
+                    is_pending = main_is_pending
+                    if rechnung_kontext:
+                        db_konten_cache[cache_key_ctx] = {'value': main_conto, 'confirmed': False}
+                # Kein Fallback auf cache_key_raw bei Nebenpositionen (verhindert Vermischung von Gas & Strom!)
             else:
+                # Haupt- / Sachposition
                 cache_key = f"{item['Lieferant']} | {clean_desc}".strip().upper()
-            cache_key_raw = f"{item['Lieferant']} | {item['Beschreibung']}".strip().upper()
-            
-            if cache_key in db_konten_cache:
-                conto = str(db_konten_cache[cache_key]['value'])
-                is_pending = not db_konten_cache[cache_key]['confirmed']
-            elif cache_key_raw in db_konten_cache:
-                conto = str(db_konten_cache[cache_key_raw]['value'])
-                is_pending = not db_konten_cache[cache_key_raw]['confirmed']
-            else:
-                # Fuzzy Cache Match (gleicher Lieferant, ähnliche Beschreibung)
-                matched_cache = find_fuzzy_cache_match(item['Lieferant'], clean_desc, db_konten_cache)
-                if matched_cache:
-                    conto = str(matched_cache['value'])
-                    is_pending = not matched_cache['confirmed']
-                    db_konten_cache[cache_key] = matched_cache
+                cache_key_raw = f"{item['Lieferant']} | {item['Beschreibung']}".strip().upper()
+                
+                if cache_key in db_konten_cache:
+                    conto = str(db_konten_cache[cache_key]['value'])
+                    is_pending = not db_konten_cache[cache_key]['confirmed']
+                elif cache_key_raw in db_konten_cache:
+                    conto = str(db_konten_cache[cache_key_raw]['value'])
+                    is_pending = not db_konten_cache[cache_key_raw]['confirmed']
+                else:
+                    # Fuzzy Cache Match (gleicher Lieferant, ähnliche Beschreibung unter Beachtung von Signalwörtern)
+                    matched_cache = find_fuzzy_cache_match(item['Lieferant'], clean_desc, db_konten_cache)
+                    if matched_cache:
+                        conto = str(matched_cache['value'])
+                        is_pending = not matched_cache['confirmed']
+                        db_konten_cache[cache_key] = matched_cache
+                        if clean_desc == invoice_main_desc and main_conto == "???":
+                            main_conto = conto
+                            main_is_pending = is_pending
             
         waehrung = item.get('Waehrung', 'EUR')
         
@@ -144,6 +194,17 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             'MwSt (%)': item['MwSt']
         })
         
+    # Falls das Konto der Hauptleistung erst im Verlauf der Schleife bekannt wurde,
+    # nachträglich alle noch offenen Nebenpositionen mit main_conto aktualisieren
+    if main_conto != "???":
+        for pos in rechnungspositionen:
+            if pos['Unterkonto'] == "???" and pos.get('_rechnung_kontext'):
+                pos['Unterkonto'] = main_conto
+                pos['is_pending'] = main_is_pending
+                c_clean = clean_description_for_dedup(pos['Beschreibung'])
+                ck = f"{pos['Lieferant']} | {c_clean} [KONTEXT: {pos['_rechnung_kontext']}]".strip().upper()
+                db_konten_cache[ck] = {'value': main_conto, 'confirmed': False}
+        
     return rechnungspositionen
 
 def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, threshold=0.80):
@@ -153,6 +214,10 @@ def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, thresh
     """
     if not supplier_name or not desc_to_match or not db_konten_cache:
         return None
+    # Nebenpositionen dürfen niemals generisch per Fuzzy gematcht werden, da sie vom Kontext abhängen
+    if is_generic_auxiliary(desc_to_match):
+        return None
+
     supplier_upper = str(supplier_name).strip().upper()
     desc_upper = str(desc_to_match).strip().upper()
     best_match = None
@@ -163,11 +228,12 @@ def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, thresh
             k_supp, k_desc = key.split(' | ', 1)
             k_supp = k_supp.strip()
             k_desc = k_desc.strip()
+            k_desc_clean = re.sub(r'\s*\[KONTEXT:.*?\]', '', k_desc, flags=re.IGNORECASE).strip()
             if k_supp == supplier_upper or (len(k_supp) >= 5 and (k_supp in supplier_upper or supplier_upper in k_supp)):
-                if not k_desc:
+                if not k_desc_clean:
                     continue
-                ratio = SequenceMatcher(None, desc_upper, k_desc).ratio()
-                if is_similar_desc(desc_upper, k_desc, threshold=threshold):
+                ratio = SequenceMatcher(None, desc_upper, k_desc_clean).ratio()
+                if is_similar_desc(desc_upper, k_desc_clean, threshold=threshold):
                     effective_score = max(ratio, threshold)
                     if effective_score > highest_ratio:
                         highest_ratio = effective_score
@@ -196,10 +262,6 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
             
             # --- Regel-System initialisieren ---
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            
-            # --- Globale Begriffe laden ---
-            from Programme.GlobalTerms import load_global_terms
-            global_terms = load_global_terms(base_dir)
             
             global_rules_path = os.path.join(base_dir, "Systemdaten", "Globale_KontenRegeln.xlsx")
             Buchung_Regeln.ensure_rule_file(global_rules_path)
@@ -261,7 +323,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                     
             total_files = len(xml_files_to_process)
             for i, xml_file in enumerate(xml_files_to_process):
-                alle_positionen.extend(parse_xml_to_list(xml_file, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache, global_terms=global_terms))
+                alle_positionen.extend(parse_xml_to_list(xml_file, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description, client_vat_id, db_konten_cache))
                 percent = int(((i + 1) / total_files) * 20) if total_files > 0 else 20
                 print(f"[PROGRESS:{percent}]")
                     
@@ -297,7 +359,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         
                     if pos.get('Unterkonto') == '???':
                         desc_raw = pos.get('Beschreibung', '')
-                        desc_norm = clean_description_for_dedup(desc_raw, global_terms)
+                        desc_norm = clean_description_for_dedup(desc_raw)
                         liefer_id = pos.get('Liefer ID', '')
                         kunden_id = pos.get('Kunden ID', '')
                         rechnung_kontext = pos.get('_rechnung_kontext', '')
@@ -359,6 +421,24 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                                 for original_i in data['indices']:
                                     alle_positionen[original_i]['Unterkonto'] = konto
                                     alle_positionen[original_i]['_is_ai'] = True
+
+                    # Post-AI: Alle Nebenpositionen, deren Hauptposition nun von der KI kontiert wurde, erben dieses Konto
+                    for pos in alle_positionen:
+                        if pos.get('Unterkonto') == '???':
+                            ctx = pos.get('_rechnung_kontext', '')
+                            rechnungs_nr = pos.get('Rechnungsnummer', '')
+                            if ctx and rechnungs_nr:
+                                for other in alle_positionen:
+                                    if other.get('Rechnungsnummer') == rechnungs_nr and other.get('Unterkonto') != '???':
+                                        clean_other = clean_description_for_dedup(other.get('Beschreibung', ''))
+                                        if clean_other == ctx or not is_generic_auxiliary(clean_other):
+                                            pos['Unterkonto'] = other['Unterkonto']
+                                            pos['_is_ai'] = True
+                                            supplier = pos.get('Lieferant', '')
+                                            clean_p = clean_description_for_dedup(pos.get('Beschreibung', ''))
+                                            ck = f"{supplier} | {clean_p} [KONTEXT: {ctx}]".strip().upper()
+                                            db_konten_cache[ck] = {'value': other['Unterkonto'], 'confirmed': False}
+                                            break
 
                 # Generelle Konvertierung und Hauptkonto-Ableitung
                 for pos in alle_positionen:
@@ -498,7 +578,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 
                 writer.close()
                 if output_dir:
-                    print(f"\n✅ Excel erfolgreich generiert: {excel_path}")
+                    print(f"\n[OK] Excel erfolgreich generiert: {excel_path}")
             
                 print("[PROGRESS:100]")
                 
