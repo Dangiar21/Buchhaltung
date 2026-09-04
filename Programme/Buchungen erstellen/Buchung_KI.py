@@ -3,6 +3,7 @@ import json
 import asyncio
 from typing import Dict, List, Any
 from difflib import SequenceMatcher
+from utils import is_similar_desc
 
 MAX_CONCURRENT_REQUESTS = 2
 CONFIDENCE_THRESHOLD = 8
@@ -179,7 +180,10 @@ async def process_batch_stage1(chunk, system_instruction_stage1, batch_num, tota
             prompt_text += f"ID: {local_idx} | "
             for k, v in item.items():
                 if k not in ['id', 'cache_key'] and str(v).strip() != "":
-                    prompt_text += f"{k}: {v} | "
+                    if k == 'Rechnung_Kontext':
+                        prompt_text += f"Rechnungshauptleistung: {v} | "
+                    else:
+                        prompt_text += f"{k}: {v} | "
             prompt_text += "\n"
             
         unsichere_faelle = []
@@ -239,7 +243,10 @@ async def process_batch_stage2(chunk, system_instruction_stage2, batch_num, tota
             prompt_text_2 += f"ID: {local_idx} | "
             for k, v in item.items():
                 if k not in ['id', 'cache_key'] and str(v).strip() != "":
-                    prompt_text_2 += f"{k}: {v} | "
+                    if k == 'Rechnung_Kontext':
+                        prompt_text_2 += f"Rechnungshauptleistung: {v} | "
+                    else:
+                        prompt_text_2 += f"{k}: {v} | "
             prompt_text_2 += "\n"
             
         try:
@@ -299,12 +306,16 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
         if not desc:
             desc = item.get('Beschreibung', '')
             
-        cache_key = f"{supplier} | {desc}".strip().upper()
+        rechnung_kontext = item.get('Rechnung_Kontext', '')
+        if rechnung_kontext:
+            cache_key = f"{supplier} | {desc} [KONTEXT: {rechnung_kontext}]".strip().upper()
+        else:
+            cache_key = f"{supplier} | {desc}".strip().upper()
         
         if cache_key in memory:
             results[item['id']] = memory[cache_key]
         else:
-            # Fuzzy-Fallback im Cache (gleicher Lieferant, ähnlicher Artikel)
+            # Fuzzy-Fallback im Cache (gleicher Lieferant, ähnlicher Artikel unter Berücksichtigung von Signalwörtern)
             supplier_upper = str(supplier).strip().upper()
             desc_upper = str(desc).strip().upper()
             matched_konto = None
@@ -319,8 +330,7 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
                         if not k_desc:
                             continue
                         ratio = SequenceMatcher(None, desc_upper, k_desc).ratio()
-                        is_sim = (ratio >= 0.80) or (len(desc_upper) >= 5 and len(k_desc) >= 5 and (desc_upper.startswith(k_desc) or k_desc.startswith(desc_upper)))
-                        if is_sim:
+                        if is_similar_desc(desc_upper, k_desc, threshold=0.80):
                             score = max(ratio, 0.80)
                             if score > highest_ratio:
                                 highest_ratio = score

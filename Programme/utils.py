@@ -1,9 +1,75 @@
 import os
-
-
+import re
+from difflib import SequenceMatcher
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
+
+SIGNAL_WORDS = {
+    # Energie & Versorgung (DE & IT)
+    "GAS", "METANO", "STROM", "ENERGIE", "ENERGIA", "ELEKTRIZITÄT", "ELETTRICA", "ELETTRO", "WASSER", "ACQUA", "IDRICO", 
+    "FERNWÄRME", "TELERISCALDAMENTO", "PELLETS", "HOLZ", "LEGNA", "MÜLL", "RIFIUTI", "TARI",
+    # Treibstoffe (DE & IT)
+    "DIESEL", "GASOLIO", "BENZIN", "BENZINA", "ADBLUE", "CARBURANTE", "LPG", "GPL",
+    # Fleisch & Lebensmittel (DE & IT)
+    "RIND", "MANZO", "BOVINO", "KALB", "VITELLO", "SCHWEIN", "MAIALE", "SUINO", "GEFLÜGEL", "POLLAME", 
+    "HUHN", "POLLO", "LAMM", "AGNELLO", "FISCH", "PESCE", "BROT", "PANE", "MEHL", "FARINA", 
+    "MILCH", "LATTE", "KÄSE", "FORMAGGIO",
+    # Kostenarten & Dienstleistungen
+    "MIETE", "LOCAZIONE", "AFFITTO", "VERSICHERUNG", "ASSICURAZIONE", "ZINSEN", "INTERESSI", 
+    "TELEFON", "TELEFONO", "INTERNET", "CONNECTIVITY", "BERATUNG", "CONSULENZA", 
+    "REINIGUNG", "PULIZIA", "TRANSPORT", "TRASPORTO", "FRACHT", "PORTO", "SPEDIZIONE", 
+    "WARTUNG", "MANUTENZIONE", "REPARATUR", "RIPARAZIONE", "LEASING", "NOLEGGIO"
+}
+
+GENERIC_AUXILIARY_TERMS = {
+    "STEUERN", "STEUER", "IMPOSTE", "IMPOSTA", "ACCISE", "ACCISA", 
+    "SPESEN", "SPESE", "GEBÜHREN", "GEBÜHR", "RUNDUNG", "RUNDUNGEN", 
+    "ONERI", "ONERE", "ADDIZIONALE", "CANONE", "QUOTA FISSA", "BOLLO", "MARCA DA BOLLO"
+}
+
+def extract_signal_words(text: str) -> set:
+    if not text:
+        return set()
+    tokens = set(re.findall(r'\b[A-ZÄÖÜa-zäöü0-9]+\b', text.upper()))
+    return tokens & SIGNAL_WORDS
+
+def is_generic_auxiliary(desc: str) -> bool:
+    """Prüft, ob eine Beschreibung ein reiner, unspezifischer Nebenkostenbegriff ist (z.B. 'Steuern', 'Spesen')."""
+    if not desc:
+        return False
+    words = [w for w in re.findall(r'\b[A-ZÄÖÜa-zäöü0-9]+\b', desc.upper()) if w]
+    if not words:
+        return False
+    if len(words) <= 2:
+        return any(w in GENERIC_AUXILIARY_TERMS for w in words)
+    return desc.upper().strip() in GENERIC_AUXILIARY_TERMS
+
+def is_similar_desc(d1: str, d2: str, threshold: float = 0.80) -> bool:
+    if not d1 or not d2:
+        return d1 == d2
+    d1_clean = d1.strip().upper()
+    d2_clean = d2.strip().upper()
+    if d1_clean == d2_clean:
+        return True
+        
+    # 1. Hard Veto: Signalwörter prüfen
+    sw1 = extract_signal_words(d1_clean)
+    sw2 = extract_signal_words(d2_clean)
+    if sw1 != sw2:
+        return False
+        
+    # 2. SequenceMatcher Ratio
+    ratio = SequenceMatcher(None, d1_clean, d2_clean).ratio()
+    if ratio >= threshold:
+        return True
+        
+    # 3. Startswith Check (nur wenn Signalwörter identisch sind und String lang genug)
+    if len(d1_clean) > 5 and len(d2_clean) > 5:
+        if d1_clean.startswith(d2_clean) or d2_clean.startswith(d1_clean):
+            return True
+            
+    return False
 
 def load_or_create_targa_list(nutzerdaten_dir=None):
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

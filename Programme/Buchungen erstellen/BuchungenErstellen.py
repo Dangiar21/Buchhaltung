@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 
 # Utils aus dem übergeordneten Ordner laden
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils import load_or_create_targa_list, append_new_targas_to_excel, ask_shorten_desc, get_text, safe_float, read_xml_or_p7m
+from utils import load_or_create_targa_list, append_new_targas_to_excel, ask_shorten_desc, get_text, safe_float, read_xml_or_p7m, is_similar_desc, is_generic_auxiliary
 
 # 1. Wir versuchen die Module zu laden. Wenn das fehlschlägt, fangen wir den Fehler ab.
 import Buchung_Regeln
@@ -65,33 +65,59 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
     parsed_items = parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_description, client_vat_id)
     rechnungspositionen = []
     
+    # Hauptleistung der Rechnung ermitteln (Sachposition mit höchstem Gesamtpreis, die kein reiner Nebenkostenbegriff ist)
+    invoice_main_desc = ""
+    max_amount = -1.0
+    for it in parsed_items:
+        it_desc = it.get('Beschreibung', '').strip()
+        it_clean = clean_description_for_dedup(it_desc, global_terms)
+        it_amount = abs(safe_float(str(it.get('Gesamtpreis_Roh', 0.0)), 0.0))
+        if not is_generic_auxiliary(it_clean) and it_amount > max_amount and it_clean:
+            max_amount = it_amount
+            invoice_main_desc = it_clean
+            
+    # Falls alle Positionen generisch sind (z.B. reine Gebührenrechnung), nimm die größte Position als Fallback
+    if not invoice_main_desc and parsed_items:
+        for it in parsed_items:
+            it_desc = it.get('Beschreibung', '').strip()
+            it_clean = clean_description_for_dedup(it_desc, global_terms)
+            it_amount = abs(safe_float(str(it.get('Gesamtpreis_Roh', 0.0)), 0.0))
+            if it_amount > max_amount and it_clean:
+                max_amount = it_amount
+                invoice_main_desc = it_clean
+    
     for item in parsed_items:
-        # Konto ermitteln
-        # Nutze die bereinigte Beschreibung (ohne Datum etc.) für den Cache
         clean_desc = clean_description_for_dedup(item['Beschreibung'], global_terms)
-        cache_key = f"{item['Lieferant']} | {clean_desc}".strip().upper()
+        is_aux = is_generic_auxiliary(clean_desc)
+        rechnung_kontext = invoice_main_desc if (is_aux and invoice_main_desc and invoice_main_desc != clean_desc) else ""
+
+        # Konto ermitteln
+        # 1. Priorität: Benutzer- & Globale Kontenregeln (Kunde vor Global)
+        conto, is_pending = Buchung_Regeln.assign_account(
+            item['Desc_Norm'], item['Beschreibung'], item['Lieferant'], item['Liefer ID'], item['Kunden ID'], rules_dict
+        )
         
-        # Fallback auf rohe Beschreibung, falls im Cache noch alte Einträge sind
-        cache_key_raw = f"{item['Lieferant']} | {item['Beschreibung']}".strip().upper()
-        
-        if cache_key_raw in db_konten_cache:
-            conto = str(db_konten_cache[cache_key_raw]['value'])
-            is_pending = not db_konten_cache[cache_key_raw]['confirmed']
-        elif cache_key in db_konten_cache:
-            conto = str(db_konten_cache[cache_key]['value'])
-            is_pending = not db_konten_cache[cache_key]['confirmed']
-        else:
-            # Fuzzy Cache Match (gleicher Lieferant, ähnliche Beschreibung)
-            matched_cache = find_fuzzy_cache_match(item['Lieferant'], clean_desc, db_konten_cache)
-            if matched_cache:
-                conto = str(matched_cache['value'])
-                is_pending = not matched_cache['confirmed']
-                db_konten_cache[cache_key] = matched_cache
+        # 2. Priorität: Falls keine Regel greift, im Datenbank-Cache (Historie / frühere Bestätigungen) suchen
+        if conto == "???":
+            if rechnung_kontext:
+                cache_key = f"{item['Lieferant']} | {clean_desc} [KONTEXT: {rechnung_kontext}]".strip().upper()
             else:
-                import Buchung_Regeln
-                conto, is_pending = Buchung_Regeln.assign_account(
-                    item['Desc_Norm'], item['Beschreibung'], item['Lieferant'], item['Liefer ID'], item['Kunden ID'], rules_dict
-                )
+                cache_key = f"{item['Lieferant']} | {clean_desc}".strip().upper()
+            cache_key_raw = f"{item['Lieferant']} | {item['Beschreibung']}".strip().upper()
+            
+            if cache_key in db_konten_cache:
+                conto = str(db_konten_cache[cache_key]['value'])
+                is_pending = not db_konten_cache[cache_key]['confirmed']
+            elif cache_key_raw in db_konten_cache:
+                conto = str(db_konten_cache[cache_key_raw]['value'])
+                is_pending = not db_konten_cache[cache_key_raw]['confirmed']
+            else:
+                # Fuzzy Cache Match (gleicher Lieferant, ähnliche Beschreibung)
+                matched_cache = find_fuzzy_cache_match(item['Lieferant'], clean_desc, db_konten_cache)
+                if matched_cache:
+                    conto = str(matched_cache['value'])
+                    is_pending = not matched_cache['confirmed']
+                    db_konten_cache[cache_key] = matched_cache
             
         waehrung = item.get('Waehrung', 'EUR')
         
@@ -108,6 +134,7 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             'Unterkonto': conto,
             'Hauptkonto': '',
             'is_pending': is_pending,
+            '_rechnung_kontext': rechnung_kontext,
             'CdC': item['CdC'],
             'Kennzeichen': item['Kennzeichen'],
             'Fahrzeugtyp': item['Fahrzeugtyp'],
@@ -118,18 +145,6 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
         })
         
     return rechnungspositionen
-
-
-def is_similar_desc(d1, d2, threshold=0.80):
-    if d1 == d2: return True
-    if SequenceMatcher(None, d1, d2).ratio() >= threshold: return True
-    w1, w2 = d1.split(), d2.split()
-    if len(w1) >= 2 and len(w2) >= 2:
-        plen = min(3, len(w1), len(w2))
-        if w1[:plen] == w2[:plen]: return True
-    if len(d1) > 5 and len(d2) > 5:
-        if d1.startswith(d2) or d2.startswith(d1): return True
-    return False
 
 def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, threshold=0.80):
     """
@@ -285,6 +300,7 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         desc_norm = clean_description_for_dedup(desc_raw, global_terms)
                         liefer_id = pos.get('Liefer ID', '')
                         kunden_id = pos.get('Kunden ID', '')
+                        rechnung_kontext = pos.get('_rechnung_kontext', '')
                         
                         is_er = pos.get('Aktiv/Passiv', 'Passiva') == 'Passiva'
                         target_dict = unique_unknowns_er if is_er else unique_unknowns_ar
@@ -292,17 +308,19 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                         # Find matching key using fuzzy logic
                         matched_key = None
                         for existing_key in target_dict.keys():
-                            e_liefer, e_desc, e_kunden = existing_key
-                            if e_liefer == liefer_id and e_kunden == kunden_id:
+                            e_liefer, e_desc, e_kunden, e_kontext = existing_key
+                            if e_liefer == liefer_id and e_kunden == kunden_id and e_kontext == rechnung_kontext:
                                 if is_similar_desc(e_desc, desc_norm):
                                     matched_key = existing_key
                                     break
                                     
                         if not matched_key:
-                            matched_key = (liefer_id, desc_norm, kunden_id)
-                            excluded_keys = {'Typ', 'Liefer ID', 'Kunden ID', 'Menge', 'MwSt Satz', 'Dateiname', 'Unterkonto', 'Hauptkonto', 'is_pending', '_is_ai'}
+                            matched_key = (liefer_id, desc_norm, kunden_id, rechnung_kontext)
+                            excluded_keys = {'Typ', 'Liefer ID', 'Kunden ID', 'Menge', 'MwSt Satz', 'Dateiname', 'Unterkonto', 'Hauptkonto', 'is_pending', '_is_ai', '_rechnung_kontext'}
                             item_id = f"er_{len(unique_unknowns_er)}" if is_er else f"ar_{len(unique_unknowns_ar)}"
                             item_data = {'id': item_id, 'Desc_Norm': desc_norm}
+                            if rechnung_kontext:
+                                item_data['Rechnung_Kontext'] = rechnung_kontext
                             for k, v in pos.items():
                                 if k not in excluded_keys and not str(k).startswith('Einzelpreis') and not str(k).startswith('Gesamtpreis'):
                                     item_data[k] = v
@@ -413,12 +431,14 @@ def run_conversion(paths=None, output_dir=None, nutzerdaten_dir=None):
                 writer = pd.ExcelWriter(excel_path, engine='openpyxl')
                 
                 sheets_to_process = []
+                drop_internal = [c for c in ['_is_ai', '_rechnung_kontext'] if c in df_eingang.columns]
                 if not df_eingang.empty or df_ausgang.empty: # Default if both empty
-                    df_eingang_export = df_eingang.drop(columns=['_is_ai']) if '_is_ai' in df_eingang.columns else df_eingang
+                    df_eingang_export = df_eingang.drop(columns=drop_internal) if drop_internal else df_eingang
                     df_eingang_export.to_excel(writer, index=False, sheet_name='Eingangsrechnungen')
                     sheets_to_process.append(('Eingangsrechnungen', df_eingang))
                 if not df_ausgang.empty:
-                    df_ausgang_export = df_ausgang.drop(columns=['_is_ai']) if '_is_ai' in df_ausgang.columns else df_ausgang
+                    drop_internal_ausgang = [c for c in ['_is_ai', '_rechnung_kontext'] if c in df_ausgang.columns]
+                    df_ausgang_export = df_ausgang.drop(columns=drop_internal_ausgang) if drop_internal_ausgang else df_ausgang
                     df_ausgang_export.to_excel(writer, index=False, sheet_name='Ausgangsrechnungen')
                     sheets_to_process.append(('Ausgangsrechnungen', df_ausgang))
 
