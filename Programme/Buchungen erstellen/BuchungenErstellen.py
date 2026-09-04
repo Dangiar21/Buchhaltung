@@ -30,34 +30,54 @@ from sdi_parser import parse_sdi_xml
 
 def clean_description_for_dedup(desc):
     if not desc: return ""
-    desc = desc.upper()
-    original_for_fallback = re.sub(r'[()/\-:]', ' ', desc).strip()
+    desc_upper = desc.upper()
     
-    desc = re.sub(r'\b(\d{1,2}[\./-]\d{1,2}[\./-]\d{2,4}|\d{4}[\./-]\d{1,2}[\./-]\d{1,2})\b', ' ', desc)
+    # 1. Sicherer Fallback aus der Originalbeschreibung (bereinigt von wirren Steuerzeichen)
+    original_for_fallback = re.sub(r'[\r\n\t]', ' ', desc_upper)
+    original_for_fallback = re.sub(r'[^\w\s.,-]', ' ', original_for_fallback)
+    original_for_fallback = re.sub(r'\s+', ' ', original_for_fallback).strip()
+    
+    # 2. Datumsmuster entfernen (DD.MM.YYYY, YYYY-MM-DD, DD/MM/YY, DD.MM.YY)
+    cleaned = re.sub(r'\b(\d{1,2}[\./-]\d{1,2}[\./-]\d{2,4}|\d{4}[\./-]\d{1,2}[\./-]\d{1,2})\b', ' ', desc_upper)
+    
+    # 3. Monatsnamen (DE & IT) mit optionalem Jahr entfernen
     months_de = r'JANUAR|FEBRUAR|MÄRZ|APRIL|MAI|JUNI|JULI|AUGUST|SEPTEMBER|OKTOBER|NOVEMBER|DEZEMBER|JAN|FEB|MÄR|APR|JUN|JUL|AUG|SEP|OKT|NOV|DEZ'
     months_it = r'GENNAIO|FEBBRAIO|MARZO|APRILE|MAGGIO|GIUGNO|LUGLIO|AGOSTO|SETTEMBRE|OTTOBRE|NOVEMBRE|DICEMBRE|GEN|MAG|GIU|LUG|AGO|SET|OTT|DIC'
     months = rf'\b({months_de}|{months_it})\b'
-    desc = re.sub(months + r'(\s*\d{2,4})?', ' ', desc)
-    desc = re.sub(r'\b\d+([.,-]\d+)*\s*(KG|G|L|ML|CM|MM|M|STK|STÜCK|PZ|%)\b', ' ', desc)
+    cleaned = re.sub(months + r'(\s*\d{2,4})?', ' ', cleaned)
     
-    # NEUE REGEX HEURISTIKEN (Nummern-Zerstörer)
-    # 1. Buchstaben-Zahlen-Mix (Seriennummern, Tier IDs wie DE09384, XJ-990)
-    # Matcht Wörter, die mindestens eine Ziffer und mindestens einen Buchstaben enthalten (auch mit Bindestrich/Slash)
-    desc = re.sub(r'\b(?=[A-Z0-9\-/]*[A-Z])(?=[A-Z0-9\-/]*\d)[A-Z0-9\-/]+\b', ' ', desc)
+    # 4. Mengenangaben mit expliziten Maßeinheiten entfernen (z.B. 500 KG, 290ML, 10 STK, 0,6 MM)
+    cleaned = re.sub(r'\b\d+([.,]\d+)*\s*(KG|G|L|LT|ML|CM|MM|M|STK|STÜCK|PZ|%)\b', ' ', cleaned)
     
-    # 2. Vokallose Abkürzungen (z.B. BTVX, GMBH, SRL) ab 3 Buchstaben
-    desc = re.sub(r'\b[B-DF-HJ-NP-TV-Z]{3,}\b', ' ', desc)
+    # 5. Spezifische Tier-Ohrmarken / amtliche IDs gezielt entfernen (z.B. IT021000123456, DE0912345678)
+    cleaned = re.sub(r'\b(IT|DE|AT|FR|NL)\s*\d{7,14}\b', ' ', cleaned)
     
-    desc = re.sub(r'\b\d+\s*$', ' ', desc)
-    desc = re.sub(r'[()/\-:]', ' ', desc)
+    # 6. Explizite Seriennummer-Präfixe entfernen (z.B. S/N: 12345, MATR. 9482)
+    cleaned = re.sub(r'\b(S/N|SN|MATR|MATRICOLA)[\s.:]*[A-Z0-9-]+\b', ' ', cleaned)
     
-    desc = re.sub(r'\s+', ' ', desc).strip()
+    # 7. Reine Jahreszahlen am Textende entfernen (z.B. "BEITRAG 2023" -> "BEITRAG")
+    cleaned = re.sub(r'\b(19\d{2}|20\d{2})\s*$', ' ', cleaned)
     
-    # FALLBACK: Wenn die gesamte Beschreibung gelöscht wurde (z.B. weil es nur eine Tiernummer war)
-    if not desc:
-        desc = re.sub(r'\s+', ' ', original_for_fallback).strip()
+    # 8. Satzzeichen & Trennzeichen (Klammern, Schrägstriche, Bindestriche etc. in Leerzeichen)
+    cleaned = re.sub(r'[()/\-:;\[\]{}+*?!~"\'`_]', ' ', cleaned)
+    # Entferne isolierte Punkte und Kommas, die nicht von Ziffern umgeben sind
+    cleaned = re.sub(r'(?<!\d)[.,]|[.,](?!\d)', ' ', cleaned)
+    
+    # 9. Mehrfache Leerzeichen zusammenfassen
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' ,.-')
+    
+    # 10. SICHERHEITS-GUARD / FALLBACK:
+    # Wenn weniger als 2 Buchstaben übrig sind, sofort Fallback auf das gereinigte Original
+    letters = re.findall(r'[A-ZÄÖÜa-zäöü]', cleaned)
+    if len(letters) < 2:
+        orig_letters = re.findall(r'[A-ZÄÖÜa-zäöü]', original_for_fallback)
+        if len(orig_letters) >= 2:
+            return original_for_fallback
+        elif original_for_fallback:
+            return original_for_fallback
+        return desc.strip()
         
-    return desc
+    return cleaned
 
 def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_dict, shorten_description=False, client_vat_id="", db_konten_cache=None):
     if db_konten_cache is None: db_konten_cache = {}

@@ -48,14 +48,19 @@ SIGNAL_ROOTS = {
 
 GENERIC_AUXILIARY_KEYWORDS = {
     # Netzausgaben & Transport / Zähler
-    "NETZAUSGABEN", "NETZKOSTEN", "NETZENTGELT", "NETZ", "TRASPORTO", "CONTATORE",
+    "NETZAUSGABEN", "NETZKOSTEN", "NETZENTGELT", "TRASPORTO", "CONTATORE", "CONTATORI",
     # Systemaufwendungen
     "SYSTEMAUFWENDUNGEN", "SYSTEMKOSTEN", "SYSTEMGEBÜHREN", "ONERI", "ONERE",
     # Steuern, Gebühren & Abgaben
     "STEUERN", "STEUER", "GEBÜHREN", "GEBÜHR", "ABGABEN", "ABGABE", "IMPOSTE", "IMPOSTA", "TASSE", "TASSA", 
-    "ACCISE", "ACCISA", "ADDIZIONALE", "CANONE", "BOLLO", "MARCA DA BOLLO",
+    "ACCISE", "ACCISA", "ADDIZIONALE", "ADDIZIONALI", "CANONE", "CANONI", "BOLLO", "BOLLI", "MARCA",
     # Allgemeine Spesen & Nebenkosten
-    "SPESEN", "SPESE", "NEBENKOSTEN", "RUNDUNG", "RUNDUNGEN", "VERSAND", "FRACHT", "PORTO", "SPEDIZIONE", "INCASSO"
+    "SPESEN", "SPESE", "SPESA", "NEBENKOSTEN", "RUNDUNG", "RUNDUNGEN", "VERSAND", "FRACHT", "PORTO", "SPEDIZIONE", "INCASSO"
+}
+
+HARDWARE_AUX_EXCEPTIONS = {
+    "TASSELLO", "TASSELLI", "NETZTEIL", "NETZWERK", "STEUERGERÄT", "STEUERKETTE", 
+    "STEUERUNG", "STEUERKABEL", "STEUERVENTIL"
 }
 
 def extract_signal_words(text: str) -> set:
@@ -81,8 +86,21 @@ def is_generic_auxiliary(desc: str) -> bool:
     if commodity_signals:
         return False
         
-    words = re.findall(r'[A-ZÄÖÜa-zäöü0-9]+', desc_clean)
-    return any(any(k in w for k in GENERIC_AUXILIARY_KEYWORDS) for w in words)
+    words = set(re.findall(r'[A-ZÄÖÜa-zäöü0-9]+', desc_clean))
+    if words & HARDWARE_AUX_EXCEPTIONS:
+        words = words - HARDWARE_AUX_EXCEPTIONS
+        if not words:
+            return False
+
+    for w in words:
+        if w in GENERIC_AUXILIARY_KEYWORDS:
+            return True
+        if any(w.startswith(p) for p in ("NETZAUSGABE", "NETZKOSTE", "NETZENTGELT", "SYSTEMAUFWENDUNG", "SYSTEMKOSTE", "MESSGEBÜHR", "ZÄHLERGEBÜHR")):
+            return True
+        if w.endswith("STEUER") or w.endswith("STEUERN") or w.endswith("GEBÜHR") or w.endswith("GEBÜHREN") or w.endswith("ABGABE") or w.endswith("ABGABEN"):
+            return True
+
+    return False
 
 def is_similar_desc(d1: str, d2: str, threshold: float = 0.80) -> bool:
     if not d1 or not d2:
