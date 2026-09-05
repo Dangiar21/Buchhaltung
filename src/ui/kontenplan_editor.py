@@ -240,11 +240,22 @@ class KontenplanEditorDialog(QDialog):
         self.resize(950, 680)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
         
+        self.is_dirty = False
+        self._syncing_tabs = False
         self.entries: List[Dict[str, str]] = []
         
         self.init_ui()
         self.load_file()
         
+    def set_dirty(self, dirty: bool = True):
+        self.is_dirty = dirty
+        typ_text = "Eingangsrechnungen (ER)" if self.typ == "ER" else "Ausgangsrechnungen (AR)"
+        base_title = f"Kontenplan-Editor: {self.client_name} [{typ_text}]"
+        if self.is_dirty:
+            self.setWindowTitle(f"* {base_title} (ungespeichert)")
+        else:
+            self.setWindowTitle(base_title)
+
     def init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(15, 15, 15, 15)
@@ -341,6 +352,7 @@ class KontenplanEditorDialog(QDialog):
         
         self.raw_text_edit = QTextEdit()
         self.raw_text_edit.setFont(QFont("Consolas, Courier New, Monospace", 10))
+        self.raw_text_edit.textChanged.connect(self.on_raw_text_changed)
         raw_layout.addWidget(self.raw_text_edit)
         
         self.tab_widget.addTab(tab_raw, "📝 Rohtext (Copy-Paste)")
@@ -368,23 +380,32 @@ class KontenplanEditorDialog(QDialog):
         
         main_layout.addLayout(footer)
 
+    def on_raw_text_changed(self):
+        if not getattr(self, '_syncing_tabs', False):
+            self.set_dirty(True)
+
     def load_file(self):
         """Liest die Datei von der Festplatte ein."""
-        if os.path.exists(self.file_path):
-            try:
-                with open(self.file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                self.raw_text_edit.setPlainText(content)
-                self.entries = parse_kontenplan(content)
-            except Exception as e:
-                QMessageBox.warning(self, "Fehler", f"Konnte Kontenplan nicht laden: {e}")
+        self._syncing_tabs = True
+        try:
+            if os.path.exists(self.file_path):
+                try:
+                    with open(self.file_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    self.raw_text_edit.setPlainText(content)
+                    self.entries = parse_kontenplan(content)
+                except Exception as e:
+                    QMessageBox.warning(self, "Fehler", f"Konnte Kontenplan nicht laden: {e}")
+                    self.entries = []
+            else:
                 self.entries = []
-        else:
-            self.entries = []
-            self.raw_text_edit.setPlainText("")
+                self.raw_text_edit.setPlainText("")
+        finally:
+            self._syncing_tabs = False
             
         self.populate_table()
         self.update_status()
+        self.set_dirty(False)
 
     def populate_table(self):
         """Befüllt die Tabelle mit den aktuellen Einträgen."""
@@ -439,6 +460,7 @@ class KontenplanEditorDialog(QDialog):
         if dlg.exec():
             data = dlg.get_data()
             self.entries.append(data)
+            self.set_dirty(True)
             self.populate_table()
             # Markiere die neu hinzugefügte Zeile
             new_row = self.table.rowCount() - 1
@@ -473,6 +495,7 @@ class KontenplanEditorDialog(QDialog):
         )
         if dlg.exec():
             self.entries[idx] = dlg.get_data()
+            self.set_dirty(True)
             self.populate_table()
             self.table.selectRow(row)
 
@@ -502,6 +525,7 @@ class KontenplanEditorDialog(QDialog):
             else:
                 self.entries.pop(row)
                 
+            self.set_dirty(True)
             self.populate_table()
 
     def sort_by_konto(self):
@@ -509,6 +533,7 @@ class KontenplanEditorDialog(QDialog):
         if not self.entries:
             return
         self.entries.sort(key=account_sort_key)
+        self.set_dirty(True)
         self.populate_table()
 
     def keyPressEvent(self, event):
@@ -559,6 +584,9 @@ class KontenplanEditorDialog(QDialog):
                 existing_map[k] = len(self.entries) - 1
                 added_count += 1
                 
+        if added_count > 0 or updated_count > 0:
+            self.set_dirty(True)
+
         self.entries.sort(key=account_sort_key)
         self.populate_table()
         
@@ -578,17 +606,21 @@ class KontenplanEditorDialog(QDialog):
 
     def on_tab_changed(self, index):
         """Synchronisiert Daten zwischen Tabelle und Rohtext."""
-        if index == 1:
-            # Wechsel zu Rohtext: Tabelle -> Rohtext
-            serialized = serialize_kontenplan(self.entries)
-            self.raw_text_edit.setPlainText(serialized)
-        elif index == 0:
-            # Wechsel zu Tabelle: Rohtext -> Tabelle
-            raw_text = self.raw_text_edit.toPlainText()
-            self.entries = parse_kontenplan(raw_text)
-            self.populate_table()
+        self._syncing_tabs = True
+        try:
+            if index == 1:
+                # Wechsel zu Rohtext: Tabelle -> Rohtext
+                serialized = serialize_kontenplan(self.entries)
+                self.raw_text_edit.setPlainText(serialized)
+            elif index == 0:
+                # Wechsel zu Tabelle: Rohtext -> Tabelle
+                raw_text = self.raw_text_edit.toPlainText()
+                self.entries = parse_kontenplan(raw_text)
+                self.populate_table()
+        finally:
+            self._syncing_tabs = False
 
-    def save_and_close(self):
+    def save_and_close(self) -> bool:
         """Speichert den Kontenplan in die Textdatei."""
         # Falls der Benutzer zuletzt im Rohtext-Modus war, Rohtext nehmen
         if self.tab_widget.currentIndex() == 1:
@@ -600,9 +632,47 @@ class KontenplanEditorDialog(QDialog):
             os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
             with open(self.file_path, "w", encoding="utf-8") as f:
                 f.write(content_to_save)
+            self.set_dirty(False)
             self.accept()
+            return True
         except Exception as e:
             QMessageBox.critical(self, "Speicherfehler", f"Fehler beim Speichern der Datei:\n{e}")
+            return False
+
+    def confirm_discard_changes(self) -> bool:
+        """Prüft auf ungespeicherte Änderungen und fragt den Benutzer."""
+        if not getattr(self, 'is_dirty', False):
+            return True
+            
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Ungespeicherte Änderungen")
+        box.setText("<b>Es gibt ungespeicherte Änderungen am Kontenplan.</b><br><br>Möchtest du diese vor dem Schließen speichern?")
+        btn_save = box.addButton("Speichern", QMessageBox.ButtonRole.AcceptRole)
+        btn_discard = box.addButton("Verwerfen", QMessageBox.ButtonRole.DestructiveRole)
+        btn_cancel = box.addButton("Abbrechen", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_save)
+        
+        box.exec()
+        clicked = box.clickedButton()
+        
+        if clicked == btn_save:
+            return self.save_and_close()
+        elif clicked == btn_discard:
+            self.is_dirty = False
+            return True
+        else:
+            return False
+
+    def closeEvent(self, event):
+        if self.confirm_discard_changes():
+            event.accept()
+        else:
+            event.ignore()
+
+    def reject(self):
+        if self.confirm_discard_changes():
+            super().reject()
 
     def open_ai_learner(self):
         """Öffnet den KI-Beispiel-Generator für diesen Kontenplan."""

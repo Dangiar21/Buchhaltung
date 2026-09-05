@@ -92,6 +92,20 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
             elif kunden_id == norm_client_vat:
                 aktiv_passiv = "Passiva"
 
+        # Pre-Index DatiRiepilogo (für MwSt-Natura-Fallback)
+        riepilogo_natura_map = {}
+        for riepilogo in root.findall('.//DatiRiepilogo'):
+            r_iva_str = get_text(riepilogo, 'AliquotaIVA', '')
+            r_natura = get_text(riepilogo, 'Natura', '').strip()
+            if r_natura:
+                try:
+                    r_iva_val = safe_float(r_iva_str, 0.0)
+                    riepilogo_natura_map[f"{r_iva_val:.2f}"] = r_natura
+                except Exception:
+                    pass
+                if r_iva_str:
+                    riepilogo_natura_map[r_iva_str.strip()] = r_natura
+
         # --- DettaglioLinee (Rechnungszeilen) ---
         dati_linee = root.findall('.//DettaglioLinee')
         bollo_in_zeilen = False
@@ -104,12 +118,16 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
             price_text = get_text(linea, 'PrezzoUnitario', '0.0')
             total_text = get_text(linea, 'PrezzoTotale', '0.0')
             iva_text = get_text(linea, 'AliquotaIVA', '0.0')
+            natura = get_text(linea, 'Natura', '').strip()
             
             # Rohwerte einlesen (PrezzoTotale enthält bereits eventuelle inline ScontoMaggiorazione)
             qty_raw = safe_float(qty_text, 1.0)
             price_raw = safe_float(price_text, 0.0)
             total_raw = safe_float(total_text, 0.0)
             iva = safe_float(iva_text, 0.0)
+            
+            if not natura:
+                natura = riepilogo_natura_map.get(f"{iva:.2f}", riepilogo_natura_map.get(iva_text.strip(), ""))
             
             if total_raw == 0.0:
                 continue
@@ -197,6 +215,7 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                 'Gesamtpreis_Roh': total, 
                 'Waehrung': waehrung,
                 'MwSt': iva / 100.0 if iva > 0 else 0.0,
+                'Natura': natura,
                 'Dateiname': dateiname
             })
             
@@ -217,6 +236,7 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                         bollo_price = abs(bollo_betrag_raw)
                     
                     dateiname = os.path.basename(xml_path)
+                    bollo_natura = riepilogo_natura_map.get("0.00", "")
                     
                     rechnungspositionen.append({
                         'Aktiv/Passiv': aktiv_passiv,
@@ -238,6 +258,7 @@ def parse_sdi_xml(xml_path, targa_dict, neue_targas_set, fehler_log, shorten_des
                         'Gesamtpreis_Roh': bollo_total,
                         'Waehrung': waehrung,
                         'MwSt': 0.0,
+                        'Natura': bollo_natura,
                         'Dateiname': dateiname
                     })
 

@@ -515,5 +515,25 @@ class BuchhaltungApp(QMainWindow):
         if paths:
             self.process_paths(paths)
 
+    def closeEvent(self, event):
+        if hasattr(self, 'cache_editor_frame') and getattr(self.cache_editor_frame, 'is_dirty', False):
+            reply = QMessageBox.question(
+                self,
+                "Ungespeicherte Änderungen",
+                "Es gibt noch ungespeicherte Änderungen im KI-Cache.\nMöchtest du diese vor dem Beenden speichern?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                self.cache_editor_frame.save_data()
+                event.accept()
+            elif reply == QMessageBox.StandardButton.Discard:
+                self.cache_editor_frame.is_dirty = False
+                event.accept()
+            else:
+                event.ignore()
+                return
+        event.accept()
+
 
 

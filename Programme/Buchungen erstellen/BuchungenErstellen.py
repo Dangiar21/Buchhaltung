@@ -136,16 +136,22 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             main_is_pending = m_pending
         else:
             # b) Cache
+            main_fahrzeug = str(invoice_main_item.get('Fahrzeugtyp', '')).strip()
+            main_ctx = main_fahrzeug if (main_fahrzeug and main_fahrzeug.upper() != "UNBEKANNT") else ""
+            main_cache_ctx = f"{invoice_main_item['Lieferant']} | {main_clean} [KONTEXT: {main_ctx}]".strip().upper() if main_ctx else None
             main_cache_key = f"{invoice_main_item['Lieferant']} | {main_clean}".strip().upper()
             main_cache_raw = f"{invoice_main_item['Lieferant']} | {invoice_main_item['Beschreibung']}".strip().upper()
-            if main_cache_key in db_konten_cache:
+            if main_cache_ctx and main_cache_ctx in db_konten_cache:
+                main_conto = str(db_konten_cache[main_cache_ctx]['value'])
+                main_is_pending = not db_konten_cache[main_cache_ctx]['confirmed']
+            elif not main_ctx and main_cache_key in db_konten_cache:
                 main_conto = str(db_konten_cache[main_cache_key]['value'])
                 main_is_pending = not db_konten_cache[main_cache_key]['confirmed']
-            elif main_cache_raw in db_konten_cache:
+            elif not main_ctx and main_cache_raw in db_konten_cache:
                 main_conto = str(db_konten_cache[main_cache_raw]['value'])
                 main_is_pending = not db_konten_cache[main_cache_raw]['confirmed']
             else:
-                m_match = find_fuzzy_cache_match(invoice_main_item['Lieferant'], main_clean, db_konten_cache)
+                m_match = find_fuzzy_cache_match(invoice_main_item['Lieferant'], main_clean, db_konten_cache, required_context=main_ctx)
                 if m_match:
                     main_conto = str(m_match['value'])
                     main_is_pending = not m_match['confirmed']
@@ -154,6 +160,12 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
         clean_desc = clean_description_for_dedup(item['Beschreibung'])
         is_aux = is_generic_auxiliary(clean_desc)
         rechnung_kontext = invoice_main_desc if (is_aux and invoice_main_desc and invoice_main_desc != clean_desc) else ""
+        fahrzeugtyp = str(item.get('Fahrzeugtyp', '')).strip()
+        if fahrzeugtyp and fahrzeugtyp.upper() != "UNBEKANNT":
+            if rechnung_kontext:
+                rechnung_kontext = f"{rechnung_kontext} | {fahrzeugtyp}"
+            else:
+                rechnung_kontext = fahrzeugtyp
 
         # Konto ermitteln
         # 1. Priorität: Benutzer- & Globale Kontenregeln (Kunde vor Global)
@@ -179,22 +191,27 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
                 # Kein Fallback auf cache_key_raw bei Nebenpositionen (verhindert Vermischung von Gas & Strom!)
             else:
                 # Haupt- / Sachposition
+                cache_key_ctx = f"{item['Lieferant']} | {clean_desc} [KONTEXT: {rechnung_kontext}]".strip().upper() if rechnung_kontext else None
                 cache_key = f"{item['Lieferant']} | {clean_desc}".strip().upper()
                 cache_key_raw = f"{item['Lieferant']} | {item['Beschreibung']}".strip().upper()
                 
-                if cache_key in db_konten_cache:
+                if cache_key_ctx and cache_key_ctx in db_konten_cache:
+                    conto = str(db_konten_cache[cache_key_ctx]['value'])
+                    is_pending = not db_konten_cache[cache_key_ctx]['confirmed']
+                elif not rechnung_kontext and cache_key in db_konten_cache:
                     conto = str(db_konten_cache[cache_key]['value'])
                     is_pending = not db_konten_cache[cache_key]['confirmed']
-                elif cache_key_raw in db_konten_cache:
+                elif not rechnung_kontext and cache_key_raw in db_konten_cache:
                     conto = str(db_konten_cache[cache_key_raw]['value'])
                     is_pending = not db_konten_cache[cache_key_raw]['confirmed']
                 else:
-                    # Fuzzy Cache Match (gleicher Lieferant, ähnliche Beschreibung unter Beachtung von Signalwörtern)
-                    matched_cache = find_fuzzy_cache_match(item['Lieferant'], clean_desc, db_konten_cache)
+                    # Fuzzy Cache Match (gleicher Lieferant, ähnliche Beschreibung unter Beachtung von Signalwörtern & Kontext)
+                    matched_cache = find_fuzzy_cache_match(item['Lieferant'], clean_desc, db_konten_cache, required_context=rechnung_kontext)
                     if matched_cache:
                         conto = str(matched_cache['value'])
                         is_pending = not matched_cache['confirmed']
-                        db_konten_cache[cache_key] = matched_cache
+                        effective_key = cache_key_ctx if cache_key_ctx else cache_key
+                        db_konten_cache[effective_key] = matched_cache
                         if clean_desc == invoice_main_desc and main_conto == "???":
                             main_conto = conto
                             main_is_pending = is_pending
@@ -221,7 +238,8 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
             'Menge': item['Menge'],
             f'Einzelpreis ({waehrung})': item['Einzelpreis_Roh'],
             f'Gesamtpreis ({waehrung})': item['Gesamtpreis_Roh'],
-            'MwSt (%)': item['MwSt']
+            'MwSt (%)': item['MwSt'],
+            'Natura': item.get('Natura', '')
         })
         
     # Falls das Konto der Hauptleistung erst im Verlauf der Schleife bekannt wurde,
@@ -237,7 +255,7 @@ def parse_xml_to_list(xml_path, targa_dict, neue_targas_set, fehler_log, rules_d
         
     return rechnungspositionen
 
-def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, threshold=0.80):
+def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, threshold=0.80, required_context=""):
     """
     Sucht im Konten-Cache nach einem Eintrag desselben Lieferanten mit hinreichend ähnlicher Beschreibung.
     Gibt das gefundene Dict {'value': konto, 'confirmed': bool} oder None zurück.
@@ -250,6 +268,7 @@ def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, thresh
 
     supplier_upper = str(supplier_name).strip().upper()
     desc_upper = str(desc_to_match).strip().upper()
+    req_ctx = str(required_context).strip().upper() if required_context else ""
     best_match = None
     highest_ratio = 0.0
 
@@ -258,6 +277,13 @@ def find_fuzzy_cache_match(supplier_name, desc_to_match, db_konten_cache, thresh
             k_supp, k_desc = key.split(' | ', 1)
             k_supp = k_supp.strip()
             k_desc = k_desc.strip()
+            
+            # Kontext-Prüfung: Falls gefordert oder im Cache vorhanden, müssen sie übereinstimmen
+            m_ctx_match = re.search(r'\[KONTEXT:\s*(.*?)\]', k_desc, flags=re.IGNORECASE)
+            k_ctx = m_ctx_match.group(1).strip().upper() if m_ctx_match else ""
+            if req_ctx != k_ctx:
+                continue
+
             k_desc_clean = re.sub(r'\s*\[KONTEXT:.*?\]', '', k_desc, flags=re.IGNORECASE).strip()
             if k_supp == supplier_upper or (len(k_supp) >= 5 and (k_supp in supplier_upper or supplier_upper in k_supp)):
                 if not k_desc_clean:

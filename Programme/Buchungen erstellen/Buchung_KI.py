@@ -198,10 +198,13 @@ async def process_batch_stage1(chunk, system_instruction_stage1, batch_num, tota
         prompt_text = "Bitte klassifiziere folgende Artikel (Beschreibungen und Daten können in Deutsch oder Italienisch sein):\n"
         for local_idx, item in enumerate(chunk):
             prompt_text += f"ID: {local_idx} | "
+            ctx = str(item.get('Rechnung_Kontext', '')).strip()
             for k, v in item.items():
                 if k not in ['id', 'cache_key'] and str(v).strip() != "":
                     if k == 'Rechnung_Kontext':
-                        prompt_text += f"Rechnungshauptleistung: {v} | "
+                        prompt_text += f"Kontext: {v} | "
+                    elif k == 'Beschreibung' and ctx and "[KONTEXT:" not in str(v).upper():
+                        prompt_text += f"Beschreibung: {v} [Kontext: {ctx}] | "
                     else:
                         prompt_text += f"{k}: {v} | "
             prompt_text += "\n"
@@ -262,10 +265,13 @@ async def process_batch_stage2(chunk, system_instruction_stage2, batch_num, tota
         prompt_text_2 = "Bitte analysiere folgende schwierige Faelle (Beschreibungen und Daten können in Deutsch oder Italienisch sein):\n"
         for local_idx, item in enumerate(chunk):
             prompt_text_2 += f"ID: {local_idx} | "
+            ctx = str(item.get('Rechnung_Kontext', '')).strip()
             for k, v in item.items():
                 if k not in ['id', 'cache_key'] and str(v).strip() != "":
                     if k == 'Rechnung_Kontext':
-                        prompt_text_2 += f"Rechnungshauptleistung: {v} | "
+                        prompt_text_2 += f"Kontext: {v} | "
+                    elif k == 'Beschreibung' and ctx and "[KONTEXT:" not in str(v).upper():
+                        prompt_text_2 += f"Beschreibung: {v} [Kontext: {ctx}] | "
                     else:
                         prompt_text_2 += f"{k}: {v} | "
             prompt_text_2 += "\n"
@@ -336,9 +342,10 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
         if cache_key in memory:
             results[item['id']] = memory[cache_key]
         else:
-            # Fuzzy-Fallback im Cache (gleicher Lieferant, ähnlicher Artikel unter Berücksichtigung von Signalwörtern)
+            # Fuzzy-Fallback im Cache (gleicher Lieferant, ähnlicher Artikel unter Berücksichtigung von Signalwörtern & Kontext)
             supplier_upper = str(supplier).strip().upper()
             desc_upper = str(desc).strip().upper()
+            req_ctx = str(rechnung_kontext).strip().upper() if rechnung_kontext else ""
             matched_konto = None
             highest_ratio = 0.0
             
@@ -349,6 +356,12 @@ async def async_classify_items_with_ai(items_to_classify: List[Dict[str, Any]], 
                         k_supp, k_desc = m_key.split(" | ", 1)
                         k_supp = k_supp.strip()
                         k_desc = k_desc.strip()
+                        
+                        m_ctx_match = re.search(r'\[KONTEXT:\s*(.*?)\]', k_desc, flags=re.IGNORECASE)
+                        k_ctx = m_ctx_match.group(1).strip().upper() if m_ctx_match else ""
+                        if req_ctx != k_ctx:
+                            continue
+
                         k_desc_clean = re.sub(r'\s*\[KONTEXT:.*?\]', '', k_desc, flags=re.IGNORECASE).strip()
                         if k_supp == supplier_upper or (len(k_supp) >= 5 and (k_supp in supplier_upper or supplier_upper in k_supp)):
                             if not k_desc_clean:

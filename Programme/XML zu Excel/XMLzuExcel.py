@@ -49,7 +49,8 @@ def parse_xml_to_list(xml_path, targa_dict=None, neue_targas_set=None, fehler_lo
                 'Menge': item['Menge'],
                 f'Einzelpreis ({waehrung})': item['Einzelpreis_Roh'],
                 f'Gesamtpreis ({waehrung})': item['Gesamtpreis_Roh'],
-                'MwSt (%)': item['MwSt']
+                'MwSt (%)': item['MwSt'],
+                'Natura': item.get('Natura', '')
             })
             
         return rechnungspositionen

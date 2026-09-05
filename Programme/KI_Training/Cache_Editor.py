@@ -289,6 +289,7 @@ class CacheEditorFrame(QWidget):
     def __init__(self, master, current_client_callback):
         super().__init__(master)
         self.current_client_callback = current_client_callback
+        self.is_dirty = False
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(20, 20, 20, 20)
@@ -548,6 +549,7 @@ class CacheEditorFrame(QWidget):
         client = self.get_client()
         if col in (1, 2):
             item = self.table_model._data[row]
+            orig_val = item[4]
             dialog = CacheEntryDetailDialog(item, client or "", self)
             dialog.exec()
             val_updated = item[4]
@@ -555,6 +557,14 @@ class CacheEditorFrame(QWidget):
             if key in self.current_data:
                 self.current_data[key]['value'] = val_updated
             self.table_model.dataChanged.emit(index, index)
+            if val_updated != orig_val:
+                try:
+                    db = get_db()
+                    confirmed = item[1]
+                    db.save_konten_cache_batch(client, {key: {'value': val_updated, 'confirmed': confirmed}})
+                    self.show_status(f"Konto geändert und gespeichert: {val_updated}", "#2e9e63")
+                except Exception as e:
+                    self.show_status(f"Fehler beim Speichern: {e}", "red")
         elif col == 3:
             # Konten-Picker öffnen
             item = self.table_model._data[row]
@@ -568,7 +578,15 @@ class CacheEditorFrame(QWidget):
                     self.current_data[key]['value'] = new_konto
                 idx = self.table_model.index(row, 3)
                 self.table_model.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DisplayRole])
-                self.show_status(f"Konto geändert: {new_konto} (Klicke auf 'Änderungen speichern')", "#e58e26")
+                
+                # Auto-Save direkt in SQLite
+                try:
+                    db = get_db()
+                    confirmed = item[1]
+                    db.save_konten_cache_batch(client, {key: {'value': new_konto, 'confirmed': confirmed}})
+                    self.show_status(f"Konto geändert und gespeichert: {new_konto}", "#2e9e63")
+                except Exception as e:
+                    self.show_status(f"Fehler beim Speichern: {e}", "red")
         
     def show_status(self, text, color="text"):
         self.status_label.setText(text)
@@ -596,6 +614,20 @@ class CacheEditorFrame(QWidget):
         return client
         
     def load_data(self, *args):
+        if getattr(self, 'is_dirty', False):
+            reply = QMessageBox.question(
+                self,
+                "Ungespeicherte Änderungen",
+                "Es gibt noch ungespeicherte Änderungen für diesen Kunden.\nMöchtest du diese vor dem Wechseln speichern?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                self.save_data()
+            elif reply == QMessageBox.StandardButton.Cancel:
+                return
+            self.is_dirty = False
+
         client = self.get_client()
         if not client:
             self.table_model.set_data([])
@@ -732,6 +764,8 @@ class CacheEditorFrame(QWidget):
 
     def save_data(self):
         client = self.get_client()
+        if not client:
+            return
         db = get_db()
         cache_type = self.cache_type_var.currentText()
         new_entries = {}
@@ -748,10 +782,32 @@ class CacheEditorFrame(QWidget):
                 new_entries[key] = {'value': val_str, 'confirmed': confirmed}
                 self.current_data[key]['value'] = val_str
                 
+        if new_entries:
             db.save_konten_cache_batch(client, new_entries)
                 
+        self.is_dirty = False
         self.show_status("Manuelle Änderungen gespeichert!", "green")
         self.apply_filters_and_render()
+
+    def closeEvent(self, event):
+        if getattr(self, 'is_dirty', False):
+            reply = QMessageBox.question(
+                self,
+                "Ungespeicherte Änderungen",
+                "Es gibt noch ungespeicherte Änderungen.\nMöchtest du diese vor dem Schließen speichern?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                self.save_data()
+                event.accept()
+            elif reply == QMessageBox.StandardButton.Discard:
+                self.is_dirty = False
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
 
     def add_new_entry(self):
         client = self.get_client()
