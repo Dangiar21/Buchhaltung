@@ -5,6 +5,7 @@ import shutil
 import threading
 import logging
 import datetime
+import time
 import concurrent.futures
 from src.db.database import init_db, Kunde
 from src.db.validators import ClientDataValidator
@@ -381,6 +382,114 @@ class AppController:
             return True
         except Exception as e:
             logger.error(f"Fehler beim Initialisieren des Backups: {e}")
+            if on_finish:
+                try:
+                    on_finish(False, str(e))
+                except Exception:
+                    pass
+            return False
+
+    def get_available_backups(self):
+        """Gibt eine Liste aller verfügbaren Backups im Backups-Ordner zurück (neueste zuerst)."""
+        base_dir = getattr(self, 'base_dir', os.path.dirname(os.path.abspath(self.base_kunden_dir)))
+        backup_dir = os.path.join(base_dir, "Backups")
+        if not os.path.exists(backup_dir):
+            return []
+        files = [f for f in os.listdir(backup_dir) if f.endswith(".zip")]
+        result = []
+        for f in files:
+            full_path = os.path.join(backup_dir, f)
+            try:
+                stat = os.stat(full_path)
+                mtime = stat.st_mtime
+                size_kb = stat.st_size / 1024.0
+                formatted_time = time.strftime('%d.%m.%Y %H:%M:%S', time.localtime(mtime))
+                result.append({
+                    "filename": f,
+                    "path": full_path,
+                    "mtime": mtime,
+                    "formatted_time": formatted_time,
+                    "size_kb": size_kb
+                })
+            except Exception:
+                pass
+        result.sort(key=lambda x: x["mtime"], reverse=True)
+        return result
+
+    def restore_backup(self, zip_path, on_finish=None):
+        """Stellt ein Backup aus einer ZIP-Datei vollständig wieder her."""
+        try:
+            if not os.path.exists(zip_path):
+                raise FileNotFoundError(f"Backup-Datei nicht gefunden: {zip_path}")
+
+            base_dir = getattr(self, 'base_dir', os.path.dirname(os.path.abspath(self.base_kunden_dir)))
+
+            def _restore_thread():
+                import zipfile
+                try:
+                    logger.info(f"\nStarte Wiederherstellung aus {zip_path}...")
+
+                    # 1. DB Session trennen
+                    if hasattr(self, 'session') and self.session:
+                        try:
+                            bind = self.session.get_bind()
+                            self.session.close()
+                            if bind:
+                                bind.dispose()
+                        except Exception:
+                            pass
+
+                    # 2. ZIP entpacken
+                    with zipfile.ZipFile(zip_path, 'r') as zf:
+                        zf.extractall(base_dir)
+
+                    # 3. DB Session neu initialisieren
+                    db_path = os.path.join(self.base_kunden_dir, "kunden.db")
+                    self.session = init_db(db_path)
+
+                    logger.info(f"\n✅ Backup erfolgreich wiederhergestellt aus:\n{zip_path}")
+                    return True, zip_path
+                except Exception as e:
+                    logger.error(f"\n❌ Fehler bei der Wiederherstellung: {e}")
+                    try:
+                        db_path = os.path.join(self.base_kunden_dir, "kunden.db")
+                        self.session = init_db(db_path)
+                    except Exception:
+                        pass
+                    raise e
+
+            future = self.executor.submit(_restore_thread)
+
+            if on_finish:
+                def _done_callback(f):
+                    success = False
+                    res = ""
+                    try:
+                        success, res = f.result()
+                    except Exception as err:
+                        success = False
+                        res = str(err)
+
+                    try:
+                        import inspect
+                        sig = inspect.signature(on_finish)
+                        if len(sig.parameters) >= 2:
+                            on_finish(success, res)
+                        elif len(sig.parameters) == 1:
+                            on_finish(success)
+                        else:
+                            on_finish()
+                    except Exception:
+                        try:
+                            on_finish(success, res)
+                        except Exception:
+                            on_finish()
+
+                future.add_done_callback(_done_callback)
+            future.add_done_callback(self._future_error_handler)
+            return True
+        except Exception as e:
+            logger.error(f"Fehler beim Initialisieren der Wiederherstellung: {e}")
             if on_finish:
                 try:
                     on_finish(False, str(e))

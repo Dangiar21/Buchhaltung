@@ -13,5 +13,15 @@
   "btn_learn_from_excel": "✨ Impara esempi da Excel (AI)",
   "btn_create_backup": "Crea backup ora",
   "backup_in_progress": "Creazione backup in corso...",
-  "backup_success": "Il backup è stato creato con successo in:"
+  "backup_success": "Il backup è stato creato con successo in:",
+  "btn_restore_backup": "Ripristina backup",
+  "restore_in_progress": "Ripristino backup in corso...",
+  "restore_success": "Il backup è stato ripristinato con successo!",
+  "restore_error": "Errore durante il ripristino:",
+  "restore_dialog_title": "Ripristina backup",
+  "restore_dialog_desc": "Seleziona un backup per ripristinare i dati (clienti, fatture, cache AI):",
+  "restore_confirm_title": "Attenzione: Ripristinare il backup?",
+  "restore_confirm_msg": "Vuoi davvero ripristinare i dati dal seguente backup?\n\n{filename}\n\n⚠️ ATTENZIONE: Tutti i dati correnti (fatture, clienti, cache AI) verranno sovrascritti con questo backup!",
+  "btn_restore": "Ripristina",
+  "btn_browse_backup": "📁 Seleziona altro file ZIP..."
 }

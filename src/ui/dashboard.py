@@ -1,21 +1,103 @@
 import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, 
-    QGridLayout, QGraphicsDropShadowEffect, QPushButton, QMessageBox
+    QGridLayout, QGraphicsDropShadowEffect, QPushButton, QMessageBox,
+    QDialog, QListWidget, QListWidgetItem, QFileDialog
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal
 import qtawesome as qta
 from src.core.translations import translator
 
+class RestoreBackupDialog(QDialog):
+    def __init__(self, parent, controller, config_manager):
+        super().__init__(parent)
+        self.controller = controller
+        self.config_manager = config_manager
+        self.lang = self.config_manager.get("language", "de")
+        self.selected_backup_path = None
+        
+        self.setWindowTitle(translator.get(self.lang, "restore_dialog_title", "Backup wiederherstellen"))
+        self.resize(550, 400)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        title = QLabel(translator.get(self.lang, "restore_dialog_title", "Backup wiederherstellen"))
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        layout.addWidget(title)
+        
+        desc = QLabel(translator.get(self.lang, "restore_dialog_desc", "Wähle ein Backup aus, um den Datenstand (Kunden, Rechnungen, KI-Cache) wiederherzustellen:"))
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+        
+        self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet("QListWidget { font-size: 11pt; padding: 5px; } QListWidget::item { padding: 8px; border-bottom: 1px solid #333333; }")
+        layout.addWidget(self.list_widget)
+        
+        self.backups = self.controller.get_available_backups()
+        for b in self.backups:
+            size_str = f"{b['size_kb']:.1f} KB" if b['size_kb'] < 1024 else f"{b['size_kb']/1024.0:.1f} MB"
+            item_text = f"📦 {b['filename']}  ({b['formatted_time']} - {size_str})"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, b['path'])
+            self.list_widget.addItem(item)
+            
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
+            
+        btn_browse = QPushButton(translator.get(self.lang, "btn_browse_backup", "📁 Andere ZIP-Datei auswählen..."))
+        btn_browse.setObjectName("ToolBtnSecondary")
+        btn_browse.clicked.connect(self.browse_external)
+        layout.addWidget(btn_browse)
+        
+        btn_box = QHBoxLayout()
+        btn_box.addStretch()
+        
+        btn_cancel = QPushButton("Abbrechen")
+        btn_cancel.clicked.connect(self.reject)
+        btn_box.addWidget(btn_cancel)
+        
+        self.btn_confirm = QPushButton(translator.get(self.lang, "btn_restore", "Wiederherstellen"))
+        self.btn_confirm.setObjectName("ToolBtn")
+        self.btn_confirm.clicked.connect(self.accept_selection)
+        btn_box.addWidget(self.btn_confirm)
+        
+        layout.addLayout(btn_box)
+
+    def browse_external(self):
+        backup_dir = os.path.join(getattr(self.controller, 'base_dir', '.'), "Backups")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Backup-ZIP auswählen",
+            backup_dir if os.path.exists(backup_dir) else "",
+            "ZIP-Dateien (*.zip)"
+        )
+        if file_path:
+            self.selected_backup_path = file_path
+            self.accept()
+
+    def accept_selection(self):
+        current_item = self.list_widget.currentItem()
+        if not current_item and not self.selected_backup_path:
+            QMessageBox.warning(self, "Keine Auswahl", "Bitte wähle ein Backup aus der Liste aus oder wähle eine externe ZIP-Datei.")
+            return
+        if current_item:
+            self.selected_backup_path = current_item.data(Qt.ItemDataRole.UserRole)
+        self.accept()
+
 class DashboardFrame(QWidget):
     backup_finished_signal = pyqtSignal(bool, str)
+    restore_finished_signal = pyqtSignal(bool, str)
 
     def __init__(self, parent, config_manager, controller):
         super().__init__(parent)
         self.config_manager = config_manager
         self.controller = controller
         self.backup_finished_signal.connect(self._on_backup_finished)
+        self.restore_finished_signal.connect(self._on_restore_finished)
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(40, 40, 40, 40)
@@ -49,6 +131,13 @@ class DashboardFrame(QWidget):
         self.btn_create_backup.setIcon(qta.icon('fa5s.save', color='white'))
         self.btn_create_backup.clicked.connect(self.trigger_backup)
         body_backup.layout().addWidget(self.btn_create_backup)
+
+        self.btn_restore_backup = QPushButton(translator.get(lang, "btn_restore_backup", "Backup wiederherstellen"))
+        self.btn_restore_backup.setObjectName("ToolBtnSecondary")
+        self.btn_restore_backup.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_restore_backup.setIcon(qta.icon('fa5s.history', color='#3b82f6'))
+        self.btn_restore_backup.clicked.connect(self.trigger_restore)
+        body_backup.layout().addWidget(self.btn_restore_backup)
         stats_layout.addWidget(self.card_backup)
         
         self.card_recent, body_recent = self.create_card("Zuletzt verwendet", "Green")
@@ -135,6 +224,72 @@ class DashboardFrame(QWidget):
                 f"❌ Fehler beim Erstellen des Backups:\n\n{res}"
             )
 
+    def trigger_restore(self):
+        dialog = RestoreBackupDialog(self, self.controller, self.config_manager)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected_backup_path:
+            zip_path = dialog.selected_backup_path
+            lang = self.config_manager.get("language", "de")
+            filename = os.path.basename(zip_path)
+            
+            confirm_title = translator.get(lang, "restore_confirm_title", "Achtung: Backup wiederherstellen?")
+            confirm_msg = translator.get(
+                lang, 
+                "restore_confirm_msg", 
+                "Möchtest du wirklich den Datenstand aus folgendem Backup wiederherstellen?\n\n{filename}\n\n⚠️ ACHTUNG: Alle aktuellen Daten (Rechnungen, Kunden, gelernter KI-Cache) werden dabei durch den Stand des Backups überschrieben!"
+            ).format(filename=filename)
+            
+            reply = QMessageBox.warning(
+                self,
+                confirm_title,
+                confirm_msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                self.btn_create_backup.setEnabled(False)
+                self.btn_restore_backup.setEnabled(False)
+                self.btn_restore_backup.setText(translator.get(lang, "restore_in_progress", "Stelle Backup wieder her..."))
+                self.btn_restore_backup.setIcon(qta.icon('fa5s.spinner', color='#3b82f6', animation=qta.Spin(self.btn_restore_backup)))
+                
+                def _on_done(success, res):
+                    self.restore_finished_signal.emit(success, str(res))
+                    
+                self.controller.restore_backup(zip_path, on_finish=_on_done)
+
+    def _on_restore_finished(self, success, res):
+        lang = self.config_manager.get("language", "de")
+        self.btn_create_backup.setEnabled(True)
+        self.btn_restore_backup.setEnabled(True)
+        self.btn_restore_backup.setText(translator.get(lang, "btn_restore_backup", "Backup wiederherstellen"))
+        self.btn_restore_backup.setIcon(qta.icon('fa5s.history', color='#3b82f6'))
+        
+        self.refresh()
+        
+        # Kundenliste im Hauptfenster aktualisieren falls verfügbar
+        main_win = self.window()
+        if hasattr(main_win, 'refresh_clients'):
+            try:
+                main_win.refresh_clients()
+            except Exception:
+                pass
+                
+        if success:
+            filename = os.path.basename(res)
+            msg_prefix = translator.get(lang, "restore_success", "Das Backup wurde erfolgreich wiederhergestellt!")
+            QMessageBox.information(
+                self,
+                "Wiederherstellung erfolgreich",
+                f"✅ {msg_prefix}\n\nStand wiederhergestellt aus:\n{filename}"
+            )
+        else:
+            msg_prefix = translator.get(lang, "restore_error", "Fehler bei der Wiederherstellung:")
+            QMessageBox.critical(
+                self,
+                "Wiederherstellungs-Fehler",
+                f"❌ {msg_prefix}\n\n{res}"
+            )
+
     def refresh(self):
         stats = self.controller.get_dashboard_stats()
         self.lbl_client_count.setText(str(stats.get("client_count", 0)))
@@ -143,6 +298,8 @@ class DashboardFrame(QWidget):
         lang = self.config_manager.get("language", "de")
         if hasattr(self, 'btn_create_backup'):
             self.btn_create_backup.setText(translator.get(lang, "btn_create_backup", "Jetzt Backup erstellen"))
+        if hasattr(self, 'btn_restore_backup'):
+            self.btn_restore_backup.setText(translator.get(lang, "btn_restore_backup", "Backup wiederherstellen"))
             
         recent = self.config_manager.get("recent_clients", [])
         if recent:

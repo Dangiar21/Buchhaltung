@@ -13,5 +13,15 @@
   "btn_learn_from_excel": "✨ Beispiele aus Excel lernen (KI)",
   "btn_create_backup": "Jetzt Backup erstellen",
   "backup_in_progress": "Erstelle Backup...",
-  "backup_success": "Das Backup wurde erfolgreich erstellt unter:"
+  "backup_success": "Das Backup wurde erfolgreich erstellt unter:",
+  "btn_restore_backup": "Backup wiederherstellen",
+  "restore_in_progress": "Stelle Backup wieder her...",
+  "restore_success": "Das Backup wurde erfolgreich wiederhergestellt!",
+  "restore_error": "Fehler bei der Wiederherstellung:",
+  "restore_dialog_title": "Backup wiederherstellen",
+  "restore_dialog_desc": "Wähle ein Backup aus, um den Datenstand (Kunden, Rechnungen, KI-Cache) wiederherzustellen:",
+  "restore_confirm_title": "Achtung: Backup wiederherstellen?",
+  "restore_confirm_msg": "Möchtest du wirklich den Datenstand aus folgendem Backup wiederherstellen?\n\n{filename}\n\n⚠️ ACHTUNG: Alle aktuellen Daten (Rechnungen, Kunden, gelernter KI-Cache) werden dabei durch den Stand des Backups überschrieben!",
+  "btn_restore": "Wiederherstellen",
+  "btn_browse_backup": "📁 Andere ZIP-Datei auswählen..."
 }
