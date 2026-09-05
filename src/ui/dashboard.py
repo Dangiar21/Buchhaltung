@@ -1,13 +1,21 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout, QGraphicsDropShadowEffect
+import os
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, 
+    QGridLayout, QGraphicsDropShadowEffect, QPushButton, QMessageBox
+)
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 import qtawesome as qta
+from src.core.translations import translator
 
 class DashboardFrame(QWidget):
+    backup_finished_signal = pyqtSignal(bool, str)
+
     def __init__(self, parent, config_manager, controller):
         super().__init__(parent)
         self.config_manager = config_manager
         self.controller = controller
+        self.backup_finished_signal.connect(self._on_backup_finished)
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(40, 40, 40, 40)
@@ -33,6 +41,14 @@ class DashboardFrame(QWidget):
         self.lbl_last_backup.setFont(QFont("Segoe UI", 18, QFont.Weight.Medium))
         self.lbl_last_backup.setAlignment(Qt.AlignmentFlag.AlignCenter)
         body_backup.layout().addWidget(self.lbl_last_backup)
+
+        lang = self.config_manager.get("language", "de")
+        self.btn_create_backup = QPushButton(translator.get(lang, "btn_create_backup", "Jetzt Backup erstellen"))
+        self.btn_create_backup.setObjectName("ToolBtn")
+        self.btn_create_backup.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_create_backup.setIcon(qta.icon('fa5s.save', color='white'))
+        self.btn_create_backup.clicked.connect(self.trigger_backup)
+        body_backup.layout().addWidget(self.btn_create_backup)
         stats_layout.addWidget(self.card_backup)
         
         self.card_recent, body_recent = self.create_card("Zuletzt verwendet", "Green")
@@ -78,18 +94,56 @@ class DashboardFrame(QWidget):
         body = QFrame()
         body.setObjectName("CardBody")
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(20, 40, 20, 40)
+        body_layout.setContentsMargins(20, 25, 20, 25)
+        body_layout.setSpacing(12)
         
         layout.addWidget(header)
         layout.addWidget(body)
         
         return card, body
 
+    def trigger_backup(self):
+        lang = self.config_manager.get("language", "de")
+        self.btn_create_backup.setEnabled(False)
+        self.btn_create_backup.setText(translator.get(lang, "backup_in_progress", "Erstelle Backup..."))
+        self.btn_create_backup.setIcon(qta.icon('fa5s.spinner', color='white', animation=qta.Spin(self.btn_create_backup)))
+        
+        def _on_done(success, res):
+            self.backup_finished_signal.emit(success, str(res))
+            
+        self.controller.create_backup(on_finish=_on_done)
+
+    def _on_backup_finished(self, success, res):
+        lang = self.config_manager.get("language", "de")
+        self.btn_create_backup.setEnabled(True)
+        self.btn_create_backup.setText(translator.get(lang, "btn_create_backup", "Jetzt Backup erstellen"))
+        self.btn_create_backup.setIcon(qta.icon('fa5s.save', color='white'))
+        self.refresh()
+        
+        if success:
+            filename = os.path.basename(res)
+            msg_prefix = translator.get(lang, "backup_success", "Das Backup wurde erfolgreich erstellt unter:")
+            QMessageBox.information(
+                self,
+                "Backup erfolgreich",
+                f"✅ {msg_prefix}\n\n{filename}\n\n(Gespeichert im Ordner 'Backups')"
+            )
+        else:
+            QMessageBox.critical(
+                self,
+                "Backup-Fehler",
+                f"❌ Fehler beim Erstellen des Backups:\n\n{res}"
+            )
+
     def refresh(self):
         stats = self.controller.get_dashboard_stats()
         self.lbl_client_count.setText(str(stats.get("client_count", 0)))
         self.lbl_last_backup.setText(stats.get("last_backup", "Nie"))
         
+        lang = self.config_manager.get("language", "de")
+        if hasattr(self, 'btn_create_backup'):
+            self.btn_create_backup.setText(translator.get(lang, "btn_create_backup", "Jetzt Backup erstellen"))
+            
         recent = self.config_manager.get("recent_clients", [])
         if recent:
             self.lbl_recent_clients.setText("\n".join(recent))

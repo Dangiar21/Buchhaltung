@@ -10,5 +10,8 @@
   "switch_dark": "Modalità Scura",
   "btn_kontenplan_learner": "Generatore Esempi AI",
   "kontenplan_learner_title": "Generatore Esempi AI da Excel Registrazioni",
-  "btn_learn_from_excel": "✨ Impara esempi da Excel (AI)"
+  "btn_learn_from_excel": "✨ Impara esempi da Excel (AI)",
+  "btn_create_backup": "Crea backup ora",
+  "backup_in_progress": "Creazione backup in corso...",
+  "backup_success": "Il backup è stato creato con successo in:"
 }

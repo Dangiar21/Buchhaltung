@@ -10,5 +10,8 @@
   "switch_dark": "Dark Mode",
   "btn_kontenplan_learner": "KI-Beispiel-Generator",
   "kontenplan_learner_title": "KI-Beispiel-Generator aus Buchungs-Excel",
-  "btn_learn_from_excel": "✨ Beispiele aus Excel lernen (KI)"
+  "btn_learn_from_excel": "✨ Beispiele aus Excel lernen (KI)",
+  "btn_create_backup": "Jetzt Backup erstellen",
+  "backup_in_progress": "Erstelle Backup...",
+  "backup_success": "Das Backup wurde erfolgreich erstellt unter:"
 }

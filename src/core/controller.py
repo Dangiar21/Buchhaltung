@@ -65,6 +65,7 @@ class AppController:
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         
         self.project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.base_dir = os.path.dirname(os.path.abspath(self.base_kunden_dir))
         self.templates_dir = os.path.join(self.project_root, "Systemdaten", "Templates")
         os.makedirs(self.templates_dir, exist_ok=True)
 
@@ -305,32 +306,86 @@ class AppController:
             return False, name
 
     def create_backup(self, on_finish=None):
+        """Erstellt ein vollständiges ZIP-Backup von Kunden/, Systemdaten/ und config.json im Ordner Backups/."""
         try:
-            backup_dir = os.path.join(os.path.dirname(self.base_kunden_dir), "Backups")
+            import zipfile
+            backup_dir = os.path.join(self.base_dir, "Backups")
             os.makedirs(backup_dir, exist_ok=True)
             
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            backup_filename = f"Backup_Kunden_{timestamp}"
+            backup_filename = f"Backup_Buchhaltung_{timestamp}.zip"
             backup_path = os.path.join(backup_dir, backup_filename)
             
-            logger.info(f"\\nStarte Backup nach {backup_dir}... Bitte warten.")
+            logger.info(f"\nStarte vollständiges Backup nach {backup_path}... Bitte warten.")
             
             def _backup_thread():
                 try:
-                    shutil.make_archive(backup_path, 'zip', self.base_kunden_dir)
-                    logger.info(f"\\n✅ Backup erfolgreich erstellt unter:\\n{backup_path}.zip")
+                    with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        # 1. Kunden-Ordner (Mandanten, Rechnungen, kunden.db etc.)
+                        if os.path.exists(self.base_kunden_dir):
+                            for root, dirs, files in os.walk(self.base_kunden_dir):
+                                for f in files:
+                                    full_path = os.path.join(root, f)
+                                    rel_path = os.path.relpath(full_path, self.base_dir)
+                                    zf.write(full_path, arcname=rel_path)
+                                    
+                        # 2. Systemdaten (buchhaltung.db KI-Cache, Globale Regeln, API Key etc.)
+                        sys_dir = os.path.join(self.base_dir, "Systemdaten")
+                        if os.path.exists(sys_dir):
+                            for root, dirs, files in os.walk(sys_dir):
+                                for f in files:
+                                    full_path = os.path.join(root, f)
+                                    rel_path = os.path.relpath(full_path, self.base_dir)
+                                    zf.write(full_path, arcname=rel_path)
+                                    
+                        # 3. config.json (falls vorhanden)
+                        cfg_file = os.path.join(self.base_dir, "config.json")
+                        if os.path.exists(cfg_file):
+                            zf.write(cfg_file, arcname="config.json")
+                            
+                    logger.info(f"\n✅ Backup erfolgreich erstellt unter:\n{backup_path}")
+                    return True, backup_path
                 except Exception as e:
-                    logger.error(f"\\n❌ Fehler beim Backup: {e}")
+                    logger.error(f"\n❌ Fehler beim Backup: {e}")
                     raise e
                     
             future = self.executor.submit(_backup_thread)
+            
             if on_finish:
-                future.add_done_callback(lambda f: on_finish())
-            # Add a generic error handler
+                def _done_callback(f):
+                    success = False
+                    res = ""
+                    try:
+                        success, res = f.result()
+                    except Exception as err:
+                        success = False
+                        res = str(err)
+                        
+                    try:
+                        import inspect
+                        sig = inspect.signature(on_finish)
+                        if len(sig.parameters) >= 2:
+                            on_finish(success, res)
+                        elif len(sig.parameters) == 1:
+                            on_finish(success)
+                        else:
+                            on_finish()
+                    except Exception:
+                        try:
+                            on_finish(success, res)
+                        except Exception:
+                            on_finish()
+
+                future.add_done_callback(_done_callback)
             future.add_done_callback(self._future_error_handler)
             return True
         except Exception as e:
             logger.error(f"Fehler beim Initialisieren des Backups: {e}")
+            if on_finish:
+                try:
+                    on_finish(False, str(e))
+                except Exception:
+                    pass
             return False
 
     def cancel_task(self):
