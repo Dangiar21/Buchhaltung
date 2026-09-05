@@ -50,79 +50,352 @@ def clean_str(val: Any) -> str:
     return s
 
 
-def find_column(df_columns: List[str], candidates: List[str]) -> Optional[str]:
-    """Findet die erste passende Spalte unabhängig von Groß-/Kleinschreibung."""
-    col_map = {c.strip().lower(): c for c in df_columns}
+# Kandidaten-Listen für Spaltenerkennung (DE, IT, EN)
+KONTO_CANDIDATES = [
+    # Deutsch
+    "unterkonto", "konto", "hauptkonto", "sachkonto", "gegenkonto",
+    "buchungskonto", "buchungs-konto", "finanzkonto", "erlöskonto", "erloeskonto",
+    "aufwandskonto", "aufwand", "erlös", "erloes", "sollkonto", "habenkonto",
+    "fibu-konto", "fibukonto", "fibu",
+    "konto-nr", "konto-nummer", "kontonummer", "kontonr", "konto nr", "konto_nr",
+    "kto-nr", "ktonr", "kto nr", "kto_nr", "kto",
+    # Italienisch
+    "sottoconto", "mastro", "conto", "conto c/g", "conto contabile",
+    "codice conto", "cod. conto", "cod.conto", "cod conto", "codice mastro",
+    "nr. conto", "nr conto", "conto dare", "conto avere", "voce", "voce di costo",
+    # Englisch
+    "account", "account no", "account number", "account id", "account_no", "account_num",
+    "gl account", "gl_account", "g/l account", "subaccount", "general ledger"
+]
+
+DESC_CANDIDATES = [
+    # Deutsch
+    "beschreibung", "buchungstext", "verwendungszweck", "artikel", "produkt", "bezeichnung",
+    "artikelbeschreibung", "produktbeschreibung", "leistungsbeschreibung",
+    "positionsbezeichnung", "positionstext", "position", "sachverhalt", "leistung",
+    "vorgang", "kommentar", "bemerkung", "notiz", "details", "text", "buchungstext 1",
+    "buchungstext1", "verwendungszweck 1",
+    # Italienisch
+    "descrizione", "descrizione articolo", "descrizione riga", "descrizione bene",
+    "descrizione beni", "descrizione operazione", "descrizione voce", "descrizione beni/servizi",
+    "causale", "causale contabile", "causale operazione", "oggetto", "prodotto",
+    "dettaglio", "dicitura", "note",
+    # Englisch
+    "description", "item description", "item_description", "line description",
+    "line_description", "item details", "memo", "narrative", "narration",
+    "transaction text"
+]
+
+SUPPLIER_CANDIDATES = [
+    # Deutsch
+    "lieferant", "kunde", "partner", "geschäftspartner", "geschaeftspartner",
+    "kreditor", "debitor", "kreditoren-nr", "debitoren-nr", "name", "firma",
+    "firmenname", "kontrahent", "empfänger", "empfaenger", "auftraggeber",
+    "personenkonto",
+    # Italienisch
+    "fornitore", "cliente", "ragione sociale", "ragione_sociale", "ragionesociale",
+    "denominazione", "anagrafica", "partner", "intestatario",
+    # Englisch
+    "supplier", "vendor", "customer", "client", "payee", "party name", "party_name",
+    "counterparty"
+]
+
+TYP_CANDIDATES = [
+    "aktiv/passiv", "aktiv_passiv", "typ", "rechnungstyp", "art", "belegart",
+    "tipo", "tipo fattura", "type", "invoice type"
+]
+
+
+def normalize_col_name(col: Any) -> str:
+    """Bereinigt Spaltennamen und gibt einen sauberen String zurück."""
+    if col is None or pd.isna(col):
+        return ""
+    s = str(col).strip()
+    s = re.sub(r'[\r\n\t]+', ' ', s).strip()
+    return s
+
+
+def find_column(df_columns: List[Any], candidates: List[str]) -> Optional[str]:
+    """
+    Findet die am besten passende Spalte aus einer Liste von Spalten.
+    Priorität:
+    1. Exakte Übereinstimmung (case-insensitive)
+    2. Bereinigte alphanumerische Übereinstimmung (z.B. 'Konto-Nr.' -> 'kontonr')
+    3. Exaktes Wort bzw. Teilstring
+    """
+    cleaned_cols = [(normalize_col_name(c), c) for c in df_columns if normalize_col_name(c)]
+    if not cleaned_cols:
+        return None
+
+    def to_alpha(s: str) -> str:
+        return re.sub(r'[^a-z0-9äöüß]', '', s.lower())
+
+    # 1. Exakte Übereinstimmung
+    col_map_exact = {c_norm.lower(): orig for c_norm, orig in cleaned_cols}
     for cand in candidates:
         cand_lower = cand.strip().lower()
-        if cand_lower in col_map:
-            return col_map[cand_lower]
-        # Teilstring-Suche
-        for col_name_lower, orig_col in col_map.items():
-            if cand_lower in col_name_lower:
-                return orig_col
+        if cand_lower in col_map_exact:
+            return col_map_exact[cand_lower]
+
+    # 2. Alphanumerische Übereinstimmung (z.B. "konto_nr", "konto-nr", "konto nr." -> "kontonr")
+    col_map_alpha = {to_alpha(c_norm): orig for c_norm, orig in cleaned_cols}
+    for cand in candidates:
+        cand_alpha = to_alpha(cand)
+        if cand_alpha in col_map_alpha:
+            return col_map_alpha[cand_alpha]
+
+    # 3. Wortgrenzen-Suche (z.B. "art" matcht "Beleg-Art" oder "Art", aber NICHT "Partner" oder "Artikel")
+    for cand in candidates:
+        cand_lower = cand.strip().lower()
+        if len(cand_lower) < 2:
+            continue
+        pattern = r'(?:\b|_)' + re.escape(cand_lower) + r'(?:\b|_)'
+        for c_norm, orig in cleaned_cols:
+            c_lower = c_norm.lower()
+            if cand_lower == "konto" and any(k in c_lower for k in ["bezeichnung", "name", "text"]):
+                continue
+            if re.search(pattern, c_lower):
+                return orig
+
+    # 4. Teilstring-Suche nur für längere spezifische Begriffe (>= 4 Zeichen)
+    for cand in candidates:
+        cand_lower = cand.strip().lower()
+        if len(cand_lower) < 4:
+            continue
+        for c_norm, orig in cleaned_cols:
+            c_lower = c_norm.lower()
+            if cand_lower == "konto" and any(k in c_lower for k in ["bezeichnung", "name", "text"]):
+                continue
+            # Verhindere Fehlzuordnungen für generische Kurzbegriffe
+            if cand_lower in ["art", "typ", "type", "tipo", "text", "name"]:
+                continue
+            if cand_lower in c_lower:
+                return orig
+
     return None
 
 
-def parse_booking_excel(excel_path: str, target_typ: str = "ER") -> Dict[str, Any]:
+def detect_header_row(xls: pd.ExcelFile, sheet_name: str, max_scan_rows: int = 15) -> int:
     """
-    Liest eine Excel-Datei (z. B. Gesammelte_Buchungen.xlsx) ein und gruppiert
-    die Datensätze nach Kontonummer.
-    
-    :param excel_path: Pfad zur Excel-Datei
-    :param target_typ: 'ER' (Eingangsrechnungen) oder 'AR' (Ausgangsrechnungen)
-    :return: Dict mit 'items_by_konto', 'total_rows', 'valid_rows', 'sheet_name'
+    Scannt die ersten max_scan_rows Zeilen eines Excel-Sheets und ermittelt
+    automatisch die Zeile, die höchstwahrscheinlich die Kopfzeile (Header) ist.
+    """
+    try:
+        df_sample = pd.read_excel(xls, sheet_name=sheet_name, header=None, nrows=max_scan_rows)
+    except Exception:
+        return 0
+
+    if df_sample.empty:
+        return 0
+
+    def to_alpha(s: str) -> str:
+        return re.sub(r'[^a-z0-9äöüß]', '', s.lower())
+
+    best_row = 0
+    best_score = -1
+
+    for r_idx in range(len(df_sample)):
+        row_values = [normalize_col_name(val) for val in df_sample.iloc[r_idx] if normalize_col_name(val)]
+        if not row_values:
+            continue
+
+        score = 0
+        has_konto = False
+        has_desc = False
+
+        for val in row_values:
+            val_lower = val.lower()
+            val_alpha = to_alpha(val_lower)
+            if any(cand == val_lower or to_alpha(cand) == val_alpha for cand in KONTO_CANDIDATES):
+                score += 5
+                has_konto = True
+            elif any(cand == val_lower or to_alpha(cand) == val_alpha for cand in DESC_CANDIDATES):
+                score += 5
+                has_desc = True
+            elif any(cand == val_lower or to_alpha(cand) == val_alpha for cand in SUPPLIER_CANDIDATES):
+                score += 3
+            elif any(cand in val_lower for cand in ["datum", "date", "data", "preis", "betrag", "importo", "mwst", "iva", "menge"]):
+                score += 2
+
+        if has_konto and has_desc:
+            score += 10
+        elif has_konto or has_desc:
+            score += 3
+
+        if score > best_score:
+            best_score = score
+            best_row = r_idx
+
+    if best_score <= 0:
+        return 0
+
+    return best_row
+
+
+def inspect_excel_file(excel_path: str, target_typ: str = "ER") -> Dict[str, Any]:
+    """
+    Untersucht eine Excel-Datei vollständig:
+    - Ermittelt alle Sheet-Namen
+    - Erkennt pro Sheet die optimale Kopfzeile und alle Spalten
+    - Ermittelt die beste automatische Zuordnung für Konto, Beschreibung und Lieferant
+    - Wählt das am besten geeignete Tabellenblatt aus
     """
     if not os.path.exists(excel_path):
         raise FileNotFoundError(f"Excel-Datei nicht gefunden: {excel_path}")
 
     with pd.ExcelFile(excel_path) as xls:
         sheet_names = xls.sheet_names
-        
-        # Bestimme das passende Sheet
-        selected_sheet = None
-        if target_typ == "ER":
-            for s in sheet_names:
-                if any(k in s.lower() for k in ["eingang", "er_", "passiv", "fornitor", "acquisto"]):
-                    selected_sheet = s
-                    break
-        elif target_typ == "AR":
-            for s in sheet_names:
-                if any(k in s.lower() for k in ["ausgang", "ar_", "aktiv", "client", "vendit"]):
-                    selected_sheet = s
-                    break
-                    
-        if not selected_sheet:
-            # Fallback: Erstes Sheet
-            selected_sheet = sheet_names[0]
+        if not sheet_names:
+            raise ValueError("Die Excel-Datei enthält keine Tabellenblätter.")
 
-        df = pd.read_excel(xls, sheet_name=selected_sheet)
-    total_rows = len(df)
+        sheets_info: Dict[str, Any] = {}
+        for s in sheet_names:
+            h_row = detect_header_row(xls, s)
+            try:
+                df_sample = pd.read_excel(xls, sheet_name=s, header=h_row, nrows=5)
+                raw_cols = [normalize_col_name(c) for c in df_sample.columns if normalize_col_name(c) and not str(c).startswith("Unnamed:")]
+            except Exception:
+                h_row = 0
+                raw_cols = []
+
+            col_konto = find_column(raw_cols, KONTO_CANDIDATES) if raw_cols else None
+            col_desc = find_column(raw_cols, DESC_CANDIDATES) if raw_cols else None
+            col_supplier = find_column(raw_cols, SUPPLIER_CANDIDATES) if raw_cols else None
+
+            is_valid = bool(col_konto and col_desc)
+            sheets_info[s] = {
+                "header_row": h_row,
+                "columns": raw_cols,
+                "col_konto": col_konto,
+                "col_desc": col_desc,
+                "col_supplier": col_supplier,
+                "is_valid": is_valid
+            }
+
+        # Bestimme das beste Sheet
+        best_sheet = None
+        type_keywords = (
+            ["eingang", "er_", "passiv", "fornitor", "acquisto"] if target_typ == "ER"
+            else ["ausgang", "ar_", "aktiv", "client", "vendit"]
+        )
+
+        # 1. Bevorzuge Sheets, deren Name zum target_typ passt UND gültige Spalten hat
+        for s in sheet_names:
+            if any(k in s.lower() for k in type_keywords) and sheets_info[s]["is_valid"]:
+                best_sheet = s
+                break
+
+        # 2. Zweite Wahl: Irgendein Sheet mit gültigen Spalten
+        if not best_sheet:
+            for s in sheet_names:
+                if sheets_info[s]["is_valid"]:
+                    best_sheet = s
+                    break
+
+        # 3. Dritte Wahl: Name passt zum target_typ
+        if not best_sheet:
+            for s in sheet_names:
+                if any(k in s.lower() for k in type_keywords):
+                    best_sheet = s
+                    break
+
+        # 4. Fallback: Erstes Sheet
+        if not best_sheet:
+            best_sheet = sheet_names[0]
+
+        return {
+            "sheet_names": sheet_names,
+            "best_sheet": best_sheet,
+            "sheets_info": sheets_info
+        }
+
+
+def parse_booking_excel(
+    excel_path: str,
+    target_typ: str = "ER",
+    selected_sheet: Optional[str] = None,
+    col_konto: Optional[str] = None,
+    col_desc: Optional[str] = None,
+    col_supplier: Optional[str] = None,
+    header_row: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Liest eine Excel-Datei (z. B. Gesammelte_Buchungen.xlsx oder FIBU-Export) ein
+    und gruppiert die Datensätze nach Kontonummer.
     
-    # Spalten lokalisieren
-    col_konto = find_column(df.columns, [
-        "unterkonto", "konto", "hauptkonto", "sottoconto", "conto", "mastro", "fibu"
-    ])
-    col_desc = find_column(df.columns, [
-        "beschreibung", "artikel", "produkt", "bezeichnung", "descrizione", "prodotto", "text"
-    ])
-    col_supplier = find_column(df.columns, [
-        "lieferant", "kunde", "partner", "fornitore", "cliente", "name", "ragione sociale"
-    ])
-    col_typ = find_column(df.columns, ["aktiv/passiv", "typ", "rechnungstyp"])
+    Unterstützt automatische Spalten- und Header-Erkennung sowie explizite
+    Spalten- und Sheet-Auswahl für maximale Kompatibilität.
+    """
+    if not os.path.exists(excel_path):
+        raise FileNotFoundError(f"Excel-Datei nicht gefunden: {excel_path}")
 
+    # Falls Sheet oder Spalten nicht vorgegeben sind: Datei analysieren
+    inspection = inspect_excel_file(excel_path, target_typ)
+    sheet_names = inspection["sheet_names"]
+
+    if not selected_sheet or selected_sheet not in sheet_names:
+        selected_sheet = inspection["best_sheet"]
+
+    sheet_meta = inspection["sheets_info"].get(selected_sheet, {})
+    if header_row is None:
+        header_row = sheet_meta.get("header_row", 0)
+
+    try:
+        df = pd.read_excel(excel_path, sheet_name=selected_sheet, header=header_row)
+    except Exception as e:
+        raise ValueError(f"Fehler beim Öffnen von Sheet '{selected_sheet}': {e}")
+
+    # Spaltennamen bereinigen
+    df.columns = [normalize_col_name(c) for c in df.columns]
+    valid_cols = [c for c in df.columns if c and not str(c).startswith("Unnamed:")]
+
+    # Spalten zuordnen
+    if not col_konto or col_konto not in df.columns:
+        col_konto = sheet_meta.get("col_konto") or find_column(df.columns, KONTO_CANDIDATES)
+
+    if not col_desc or col_desc not in df.columns:
+        col_desc = sheet_meta.get("col_desc") or find_column(df.columns, DESC_CANDIDATES)
+
+    if not col_supplier or col_supplier not in df.columns:
+        col_supplier = sheet_meta.get("col_supplier") or find_column(df.columns, SUPPLIER_CANDIDATES)
+
+    col_typ = find_column(df.columns, TYP_CANDIDATES)
+
+    # Validierung mit benutzerfreundlicher Hilfestellung
     if not col_konto:
-        raise ValueError(f"In Sheet '{selected_sheet}' konnte keine Konto-Spalte gefunden werden.")
+        cols_str = ", ".join(valid_cols[:12]) if valid_cols else "(keine Text-Spalten erkannt)"
+        msg = f"In Tabellenblatt '{selected_sheet}' konnte keine Konto-Spalte gefunden werden."
+        if any("liefer" in str(c).lower() or "rechnungsnummer" in str(c).lower() for c in df.columns):
+            msg += (
+                "\n\nHinweis: Falls es sich um 'Gesammelte_XML_Daten.xlsx' handelt, "
+                "enthält diese Datei noch keine Buchungskonten. "
+                "Für den KI-Beispiel-Generator wird eine bereits kontierte Datei benötigt "
+                "(z. B. 'Gesammelte_Buchungen.xlsx' aus dem Schritt 'Buchungen erstellen' oder ein FIBU-Export)."
+            )
+        msg += f"\n\nErkannte Spalten: {cols_str}"
+        raise ValueError(msg)
+
     if not col_desc:
-        raise ValueError(f"In Sheet '{selected_sheet}' konnte keine Beschreibungs-Spalte gefunden werden.")
+        cols_str = ", ".join(valid_cols[:12]) if valid_cols else "(keine Text-Spalten erkannt)"
+        raise ValueError(
+            f"In Tabellenblatt '{selected_sheet}' konnte keine Beschreibungs-Spalte gefunden werden.\n\n"
+            f"Erkannte Spalten: {cols_str}"
+        )
 
-    # Filter nach Aktiv/Passiv falls Spalte existiert und eindeutig trennbar ist
-    if col_typ:
-        if target_typ == "ER":
-            df = df[df[col_typ].astype(str).str.lower().str.contains("passiv|er|fornitor", na=False) | (df[col_typ].isna())]
-        elif target_typ == "AR":
-            df = df[df[col_typ].astype(str).str.lower().str.contains("aktiv|ar|client", na=False) | (df[col_typ].isna())]
+    # Filter nach Aktiv/Passiv nur falls Spalte existiert und eindeutige Aktiv/Passiv-Werte enthält
+    if col_typ and not df.empty:
+        col_vals_lower = df[col_typ].astype(str).str.lower()
+        has_passiv = col_vals_lower.str.contains(r'passiv|fornitor|^er$', na=False).any()
+        has_aktiv = col_vals_lower.str.contains(r'aktiv|client|^ar$', na=False).any()
+        if has_passiv or has_aktiv:
+            if target_typ == "ER":
+                filtered = df[col_vals_lower.str.contains(r'passiv|fornitor|^er$', na=False) | (df[col_typ].isna())]
+            else:
+                filtered = df[col_vals_lower.str.contains(r'aktiv|client|^ar$', na=False) | (df[col_typ].isna())]
+            if not filtered.empty:
+                df = filtered
 
+    total_rows = len(df)
     items_by_konto: Dict[str, List[Dict[str, str]]] = {}
     valid_rows = 0
     seen_pairs_by_konto: Dict[str, set] = {}
@@ -135,15 +408,12 @@ def parse_booking_excel(excel_path: str, target_typ: str = "ER") -> Dict[str, An
         if not raw_konto or not raw_desc or raw_konto == "???":
             continue
 
-        # Normalisierung des Kontos
-        # Oft steht in Excel z.B. 801001 oder 104 / 801001 oder 104 / 801001 – Verbrauchsmaterial
         konto_key = raw_konto.strip()
 
         if konto_key not in items_by_konto:
             items_by_konto[konto_key] = []
             seen_pairs_by_konto[konto_key] = set()
 
-        # Dedupliziere exakt gleiche Kombination aus Beschreibung + Lieferant
         pair_key = (raw_desc.lower(), supplier.lower())
         if pair_key not in seen_pairs_by_konto[konto_key]:
             seen_pairs_by_konto[konto_key].add(pair_key)
@@ -157,7 +427,11 @@ def parse_booking_excel(excel_path: str, target_typ: str = "ER") -> Dict[str, An
         "items_by_konto": items_by_konto,
         "total_rows": total_rows,
         "valid_rows": valid_rows,
-        "sheet_name": selected_sheet
+        "sheet_name": selected_sheet,
+        "col_konto": col_konto,
+        "col_desc": col_desc,
+        "col_supplier": col_supplier,
+        "header_row": header_row
     }
 
 

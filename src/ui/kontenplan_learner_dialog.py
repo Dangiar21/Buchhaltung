@@ -16,6 +16,7 @@ import qtawesome as qta
 
 from src.core.kontenplan_learner import (
     parse_booking_excel,
+    inspect_excel_file,
     synthesize_terms_for_chunk,
     clean_and_deduplicate_konto_terms,
     extract_existing_examples_from_desc,
@@ -31,11 +32,24 @@ class LearnerWorker(QThread):
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, excel_path: str, target_kontenplan_path: str, target_typ: str):
+    def __init__(
+        self,
+        excel_path: str,
+        target_kontenplan_path: str,
+        target_typ: str,
+        selected_sheet: Optional[str] = None,
+        col_konto: Optional[str] = None,
+        col_desc: Optional[str] = None,
+        col_supplier: Optional[str] = None
+    ):
         super().__init__()
         self.excel_path = excel_path
         self.target_kontenplan_path = target_kontenplan_path
         self.target_typ = target_typ
+        self.selected_sheet = selected_sheet
+        self.col_konto = col_konto
+        self.col_desc = col_desc
+        self.col_supplier = col_supplier
         self.is_cancelled = False
 
     def cancel(self):
@@ -52,7 +66,14 @@ class LearnerWorker(QThread):
         
         # 1. Excel parsen
         try:
-            excel_data = parse_booking_excel(self.excel_path, self.target_typ)
+            excel_data = parse_booking_excel(
+                self.excel_path,
+                target_typ=self.target_typ,
+                selected_sheet=self.selected_sheet,
+                col_konto=self.col_konto,
+                col_desc=self.col_desc,
+                col_supplier=self.col_supplier
+            )
         except Exception as e:
             self.error_signal.emit(f"Fehler beim Lesen der Excel: {e}")
             return
@@ -212,12 +233,13 @@ class KontenplanLearnerDialog(QDialog):
         self.initial_file_path = initial_file_path
 
         self.selected_excel_path: Optional[str] = None
+        self.excel_inspection: Optional[Dict[str, Any]] = None
         self.target_kontenplan_path: str = ""
         self.worker: Optional[LearnerWorker] = None
         self.learned_results: Dict[str, Any] = {}
 
         self.setWindowTitle("✨ KI-Beispiel-Generator für Kontenpläne")
-        self.resize(920, 640)
+        self.resize(940, 680)
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
 
         self.init_ui()
@@ -376,6 +398,11 @@ class KontenplanLearnerDialog(QDialog):
         drop_zone.file_dropped.connect(self.set_excel_file)
         layout.addWidget(drop_zone)
 
+        # 3. Spalten- und Sheet-Zuordnung Frame (initial verborgen)
+        self.mapping_group = self._build_mapping_widget()
+        self.mapping_group.setVisible(False)
+        layout.addWidget(self.mapping_group)
+
         # File Info Label
         self.lbl_file_info = QLabel("Keine Datei ausgewählt.")
         self.lbl_file_info.setStyleSheet("color: #71717a; font-style: italic;")
@@ -414,6 +441,71 @@ class KontenplanLearnerDialog(QDialog):
 
         layout.addLayout(btn_bar)
         return page
+
+    def _build_mapping_widget(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("mappingFrame")
+        frame.setStyleSheet("""
+            QFrame#mappingFrame {
+                background-color: rgba(255, 255, 255, 0.03);
+                border: 1px solid #3f3f46;
+                border-radius: 6px;
+                padding: 10px;
+            }
+        """)
+        f_layout = QVBoxLayout(frame)
+        f_layout.setContentsMargins(10, 10, 10, 10)
+        f_layout.setSpacing(10)
+
+        # Header
+        h_box = QHBoxLayout()
+        icon = QLabel()
+        icon.setPixmap(qta.icon('fa5s.table', color='#3a7ebf').pixmap(15, 15))
+        h_box.addWidget(icon)
+        lbl = QLabel("Spalten- & Sheet-Zuordnung:")
+        lbl.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        h_box.addWidget(lbl)
+        h_box.addStretch()
+        f_layout.addLayout(h_box)
+
+        # Row 1: Sheet
+        r1 = QHBoxLayout()
+        lbl_sheet = QLabel("Tabellenblatt:")
+        lbl_sheet.setFixedWidth(130)
+        self.combo_sheet = QComboBox()
+        self.combo_sheet.currentIndexChanged.connect(self.on_sheet_changed)
+        r1.addWidget(lbl_sheet)
+        r1.addWidget(self.combo_sheet, stretch=1)
+        f_layout.addLayout(r1)
+
+        # Row 2: Spalten
+        r2 = QHBoxLayout()
+
+        lbl_k = QLabel("Konto-Spalte:")
+        lbl_k.setFixedWidth(130)
+        self.combo_col_konto = QComboBox()
+        self.combo_col_konto.currentIndexChanged.connect(lambda _: self.validate_and_preview_mapping())
+        r2.addWidget(lbl_k)
+        r2.addWidget(self.combo_col_konto, stretch=1)
+
+        r2.addSpacing(15)
+
+        lbl_d = QLabel("Beschreibung:")
+        self.combo_col_desc = QComboBox()
+        self.combo_col_desc.currentIndexChanged.connect(lambda _: self.validate_and_preview_mapping())
+        r2.addWidget(lbl_d)
+        r2.addWidget(self.combo_col_desc, stretch=1)
+
+        r2.addSpacing(15)
+
+        lbl_s = QLabel("Lieferant (opt.):")
+        self.combo_col_supplier = QComboBox()
+        self.combo_col_supplier.currentIndexChanged.connect(lambda _: self.validate_and_preview_mapping())
+        r2.addWidget(lbl_s)
+        r2.addWidget(self.combo_col_supplier, stretch=1)
+
+        f_layout.addLayout(r2)
+        return frame
 
     # -------------------------------------------------------------
     # PAGE 2: PROGRESS
@@ -568,6 +660,19 @@ class KontenplanLearnerDialog(QDialog):
         else:
             self.lbl_target_path.setText("Zieldatei: nicht definiert")
 
+        # Falls bereits eine Datei geladen ist, bei Typwechsel (ER/AR) neu validieren
+        if hasattr(self, 'selected_excel_path') and self.selected_excel_path and hasattr(self, 'combo_sheet'):
+            if self.excel_inspection:
+                try:
+                    new_insp = inspect_excel_file(self.selected_excel_path, typ)
+                    self.excel_inspection = new_insp
+                    best_s = new_insp.get("best_sheet")
+                    if best_s and best_s != self.combo_sheet.currentText():
+                        self.combo_sheet.setCurrentText(best_s)
+                except Exception:
+                    pass
+            self.validate_and_preview_mapping()
+
     def browse_excel(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Buchungs-Excel auswählen", "", "Excel-Dateien (*.xlsx *.xls)"
@@ -579,20 +684,138 @@ class KontenplanLearnerDialog(QDialog):
         self.selected_excel_path = path
         target_typ = "ER" if self.combo_typ.currentIndex() == 0 else "AR"
         try:
-            summary = parse_booking_excel(path, target_typ)
-            konten_cnt = len(summary["items_by_konto"])
-            rows_cnt = summary["valid_rows"]
-            sheet = summary["sheet_name"]
-            fname = os.path.basename(path)
-            self.lbl_file_info.setText(
-                f"✅ <b>{fname}</b> | Sheet: <i>{sheet}</i> | "
-                f"<b>{konten_cnt}</b> Konten mit insgesamt <b>{rows_cnt}</b> Positionen erkannt."
-            )
-            self.lbl_file_info.setStyleSheet("color: #22c55e;")
-            self.btn_start.setEnabled(True)
+            self.excel_inspection = inspect_excel_file(path, target_typ)
+            sheet_names = self.excel_inspection["sheet_names"]
+            best_sheet = self.excel_inspection["best_sheet"]
+
+            self.combo_sheet.blockSignals(True)
+            self.combo_sheet.clear()
+            self.combo_sheet.addItems(sheet_names)
+            if best_sheet in sheet_names:
+                self.combo_sheet.setCurrentText(best_sheet)
+            self.combo_sheet.blockSignals(False)
+
+            self._update_column_combos_for_sheet(best_sheet)
+            self.mapping_group.setVisible(True)
+            self.validate_and_preview_mapping()
         except Exception as e:
             self.lbl_file_info.setText(f"❌ Fehler bei der Analyse: {e}")
-            self.lbl_file_info.setStyleSheet("color: #ef4444;")
+            self.lbl_file_info.setStyleSheet("color: #ef4444; font-size: 11px;")
+            self.btn_start.setEnabled(False)
+
+    def on_sheet_changed(self):
+        sheet = self.combo_sheet.currentText().strip()
+        if sheet and self.excel_inspection:
+            self._update_column_combos_for_sheet(sheet)
+            self.validate_and_preview_mapping()
+
+    def _update_column_combos_for_sheet(self, sheet_name: str):
+        if not self.excel_inspection:
+            return
+        sheet_meta = self.excel_inspection["sheets_info"].get(sheet_name, {})
+        cols = sheet_meta.get("columns", [])
+
+        self.combo_col_konto.blockSignals(True)
+        self.combo_col_desc.blockSignals(True)
+        self.combo_col_supplier.blockSignals(True)
+
+        self.combo_col_konto.clear()
+        self.combo_col_desc.clear()
+        self.combo_col_supplier.clear()
+
+        self.combo_col_konto.addItem("-- Bitte wählen --")
+        self.combo_col_konto.addItems(cols)
+
+        self.combo_col_desc.addItem("-- Bitte wählen --")
+        self.combo_col_desc.addItems(cols)
+
+        self.combo_col_supplier.addItem("(Keine / Optional)")
+        self.combo_col_supplier.addItems(cols)
+
+        col_k = sheet_meta.get("col_konto")
+        if col_k and col_k in cols:
+            self.combo_col_konto.setCurrentText(col_k)
+
+        col_d = sheet_meta.get("col_desc")
+        if col_d and col_d in cols:
+            self.combo_col_desc.setCurrentText(col_d)
+
+        col_s = sheet_meta.get("col_supplier")
+        if col_s and col_s in cols:
+            self.combo_col_supplier.setCurrentText(col_s)
+
+        self.combo_col_konto.blockSignals(False)
+        self.combo_col_desc.blockSignals(False)
+        self.combo_col_supplier.blockSignals(False)
+
+    def validate_and_preview_mapping(self):
+        if not self.selected_excel_path:
+            return
+
+        sheet = self.combo_sheet.currentText().strip()
+        col_konto = self.combo_col_konto.currentText().strip()
+        if col_konto == "-- Bitte wählen --":
+            col_konto = None
+
+        col_desc = self.combo_col_desc.currentText().strip()
+        if col_desc == "-- Bitte wählen --":
+            col_desc = None
+
+        col_supplier = self.combo_col_supplier.currentText().strip()
+        if col_supplier.startswith("("):
+            col_supplier = None
+
+        target_typ = "ER" if self.combo_typ.currentIndex() == 0 else "AR"
+        fname = os.path.basename(self.selected_excel_path)
+
+        if not col_konto or not col_desc:
+            if "xml" in fname.lower():
+                self.lbl_file_info.setText(
+                    f"ℹ️ <b>{fname}</b> | Enthält Rohdaten ohne Buchungskonten.<br>"
+                    "Tipp: Verwende für den KI-Beispiel-Generator eine kontierte Datei wie z. B. <i>Gesammelte_Buchungen.xlsx</i>."
+                )
+                self.lbl_file_info.setStyleSheet("color: #eab308; font-size: 11px;")
+            else:
+                missing = []
+                if not col_konto: missing.append("Konto-Spalte")
+                if not col_desc: missing.append("Beschreibungs-Spalte")
+                self.lbl_file_info.setText(
+                    f"⚠️ <b>Zuordnung erforderlich:</b> Bitte wähle oben die {' und '.join(missing)} aus."
+                )
+                self.lbl_file_info.setStyleSheet("color: #eab308; font-size: 11px;")
+            self.btn_start.setEnabled(False)
+            return
+
+        try:
+            summary = parse_booking_excel(
+                self.selected_excel_path,
+                target_typ=target_typ,
+                selected_sheet=sheet,
+                col_konto=col_konto,
+                col_desc=col_desc,
+                col_supplier=col_supplier
+            )
+            konten_cnt = len(summary["items_by_konto"])
+            rows_cnt = summary["valid_rows"]
+            if konten_cnt == 0:
+                self.lbl_file_info.setText(
+                    f"⚠️ <b>{fname}</b> | Keine Positionen mit Kontonummer gefunden. "
+                    f"(Alle Konten leer oder als '???' markiert)"
+                )
+                self.lbl_file_info.setStyleSheet("color: #eab308; font-size: 11px;")
+                self.btn_start.setEnabled(False)
+            else:
+                supplier_info = f" | Lieferant: <b>{col_supplier}</b>" if col_supplier else ""
+                self.lbl_file_info.setText(
+                    f"✅ <b>{fname}</b> | Sheet: <i>{sheet}</i> | "
+                    f"Konto: <b>{col_konto}</b> | Text: <b>{col_desc}</b>{supplier_info}<br>"
+                    f"Erkannt: <b>{konten_cnt}</b> Konten mit <b>{rows_cnt}</b> Positionen bereit für KI-Analyse."
+                )
+                self.lbl_file_info.setStyleSheet("color: #22c55e; font-size: 11px;")
+                self.btn_start.setEnabled(True)
+        except Exception as e:
+            self.lbl_file_info.setText(f"❌ Fehler bei der Analyse: {e}")
+            self.lbl_file_info.setStyleSheet("color: #ef4444; font-size: 11px;")
             self.btn_start.setEnabled(False)
 
     def start_processing(self):
@@ -601,6 +824,18 @@ class KontenplanLearnerDialog(QDialog):
             return
 
         target_typ = "ER" if self.combo_typ.currentIndex() == 0 else "AR"
+        sheet = self.combo_sheet.currentText().strip()
+        col_konto = self.combo_col_konto.currentText().strip()
+        if col_konto == "-- Bitte wählen --":
+            col_konto = None
+
+        col_desc = self.combo_col_desc.currentText().strip()
+        if col_desc == "-- Bitte wählen --":
+            col_desc = None
+
+        col_supplier = self.combo_col_supplier.currentText().strip()
+        if col_supplier.startswith("("):
+            col_supplier = None
 
         self.stacked.setCurrentIndex(1)
         self.progress_bar.setValue(0)
@@ -609,7 +844,11 @@ class KontenplanLearnerDialog(QDialog):
         self.worker = LearnerWorker(
             excel_path=self.selected_excel_path,
             target_kontenplan_path=self.target_kontenplan_path,
-            target_typ=target_typ
+            target_typ=target_typ,
+            selected_sheet=sheet,
+            col_konto=col_konto,
+            col_desc=col_desc,
+            col_supplier=col_supplier
         )
         self.worker.progress_signal.connect(self.on_worker_progress)
         self.worker.finished_signal.connect(self.on_worker_finished)
